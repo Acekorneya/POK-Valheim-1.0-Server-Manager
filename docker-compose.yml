@@ -1,0 +1,40 @@
+services:
+  # Builds the custom Linux Valheim Dedicated Server image used by POK-Valheim Manager
+  pok-valheim-server-image:
+    build:
+      context: ./valheim-server
+      dockerfile: Dockerfile
+    image: pok-valheim-server:latest
+    profiles: ["build-only"]
+
+  # POK-Valheim Web UI & Multi-Server Docker Manager
+  pok-valheim-manager:
+    build:
+      context: ./manager
+      dockerfile: Dockerfile
+    image: pok-valheim-manager:latest
+    container_name: pok-valheim-manager
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    environment:
+      - PORT=8080
+      - TZ=${TZ:-UTC}
+      - DATA_DIR=/data
+      - HOST_DATA_DIR=${HOST_DATA_DIR:-}
+      - VALHEIM_IMAGE=pok-valheim-server:latest
+      - GAME_FILES_VOLUME=pok-valheim-gamefiles
+      - GAME_FILES_MOUNT_PATH=/opt/valheim-shared
+      - PUBLIC_HOST=${PUBLIC_HOST:-}
+      - POK_AUTH_ENABLED=${POK_AUTH_ENABLED:-true}
+      - POK_ADMIN_USER=${POK_ADMIN_USER:-admin}
+      - POK_ADMIN_PASS=${POK_ADMIN_PASS:-pokvalheim}
+      - POK_JWT_SECRET=${POK_JWT_SECRET:-change-me-to-a-long-random-string}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOST_DATA_DIR:-./data}:/data
+      - pok-valheim-gamefiles:/opt/valheim-shared:ro
+
+volumes:
+  pok-valheim-gamefiles:
+    name: pok-valheim-gamefiles
