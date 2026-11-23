@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/892970/logo.png" alt="Valheim Logo" width="520">
+  <img src="logo/valheim-logo.webp" alt="Valheim Logo" width="500">
 </p>
 
 <h1 align="center">POK-Valheim 1.0 — Multi-Realm Linux Docker Server Manager</h1>
