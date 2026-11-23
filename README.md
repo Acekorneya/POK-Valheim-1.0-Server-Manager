@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo/valheim-logo.webp" alt="Valheim Logo" width="500">
+  <img src="logo/valheim-logo.png" alt="Valheim Logo" width="520">
 </p>
 
 <h1 align="center">POK-Valheim 1.0 — Multi-Realm Linux Docker Server Manager</h1>
