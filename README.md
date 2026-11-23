@@ -1,9 +1,26 @@
-# POK-Valheim 1.0 — Multi-Realm Linux Docker Server Manager
+<p align="center">
+  <img src="https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/892970/logo.png" alt="Valheim Logo" width="520">
+</p>
 
-**POK-Valheim** is an all-in-one, Docker-based **Valheim 1.0 Dedicated Server Manager** for Linux with a modern Web UI.  
-It makes it effortless to run **multiple Valheim realms side-by-side** (e.g., Main World, 3x Resource Farm, Creative Builder, Hardcore) so you and your friends can jump back and forth between servers, transfer saves, install Thunderstore mods, schedule backups, and keep Valheim updated automatically.
+<h1 align="center">POK-Valheim 1.0 — Multi-Realm Linux Docker Server Manager</h1>
+
+<p align="center">
+  <strong>Run, configure, mod, back up, and auto-update multiple Valheim 1.0 Dedicated Servers on Linux from one modern Web UI.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Acekorneya/POK-Valheim-1.0-Server-Manager"><img src="https://img.shields.io/github/stars/Acekorneya/POK-Valheim-1.0-Server-Manager?style=for-the-badge&logo=github&color=yellow" alt="GitHub Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License"></a>
+  <a href="https://github.com/Acekorneya/POK-Valheim-1.0-Server-Manager"><img src="https://img.shields.io/badge/Valheim-1.0%20Ready-f59e0b?style=for-the-badge&logo=steam&logoColor=white" alt="Valheim 1.0 Ready"></a>
+  <a href="https://github.com/Acekorneya/POK-Valheim-1.0-Server-Manager"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Compose"></a>
+  <a href="https://discord.gg/9GJKWjQuXy"><img src="https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://www.buymeacoffee.com/acekorneyab"><img src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"></a>
+</p>
 
 ---
+
+**POK-Valheim** is an all-in-one, Docker-based **Valheim 1.0 Dedicated Server Manager** for Linux with a sleek dark Web UI.  
+It makes it effortless to run **multiple Valheim realms side-by-side** (e.g., Main World, 3x Resource Farm, Creative Builder, Hardcore) so you and your friends can jump back and forth between servers, transfer saves, install Thunderstore mods, schedule backups, and keep Valheim updated automatically.
 
 ## Features
 
@@ -145,6 +162,7 @@ docker compose up -d --build pok-valheim-manager
 pok-valheim/
 ├── docker-compose.yml          # Manager + Valheim server image build definition
 ├── .env.example                # Configuration template
+├── LICENSE                     # MIT License
 ├── scripts/
 │   └── setup-linux.sh          # One-command Linux setup script
 ├── valheim-server/
@@ -155,3 +173,21 @@ pok-valheim/
     ├── server/                 # Express + TypeScript + Dockerode + WebSockets + Thunderstore + Cron
     └── web/                    # React 19 + Vite + Tailwind CSS v4 + Lucide Icons
 ```
+
+---
+
+## Community & Support the Project
+
+- **Discord Community**: [Join our Discord](https://discord.gg/9GJKWjQuXy) to get help, share setups, and stay updated.
+
+If you find **POK-Valheim** useful and would like to support its development, you can buy me a coffee! Your support is greatly appreciated and helps me continue maintaining and improving the project.
+
+<p align="left">
+  <a href="https://www.buymeacoffee.com/acekorneyab">
+    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
+  </a>
+</p>
+
+## License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
