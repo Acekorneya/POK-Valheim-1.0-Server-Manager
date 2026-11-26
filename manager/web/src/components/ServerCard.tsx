@@ -69,6 +69,7 @@ export function ServerCard({
 
   // Build concise modifier pills
   const pills: string[] = [];
+  if (server.rconEnabled) pills.push(`RCON :${server.rconPort || server.port + 2}`);
   if (server.crossplay) pills.push('Crossplay');
   if (server.modifiers.preset) pills.push(`Preset: ${server.modifiers.preset}`);
   if (server.modifiers.resources) pills.push(`Resources: ${server.modifiers.resources}`);
@@ -81,7 +82,10 @@ export function ServerCard({
   if (server.modifiers.dungeonBuild) pills.push('Dungeon Build');
 
   return (
-    <div className="group rounded-2xl bg-[#111622]/90 border border-slate-800/80 hover:border-amber-500/35 transition-all duration-200 p-5 flex flex-col justify-between shadow-lg shadow-black/30">
+    <div
+      onClick={onEdit}
+      className="group rounded-2xl bg-[#111622]/90 border border-slate-800/80 hover:border-amber-500/45 transition-all duration-200 p-5 flex flex-col justify-between shadow-lg shadow-black/30 cursor-pointer"
+    >
       <div>
         {/* Header */}
         <div className="flex items-start justify-between gap-3 mb-3">
@@ -136,7 +140,10 @@ export function ServerCard({
             <div className="flex items-center justify-between text-xs">
               <span className="text-slate-400">Seed</span>
               <button
-                onClick={() => copyText('seed', server.runtime.worldSeed || '')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  copyText('seed', server.runtime.worldSeed || '');
+                }}
                 className="flex items-center gap-1.5 font-mono-code text-emerald-300 hover:text-emerald-200 transition cursor-pointer"
                 title="Copy world seed"
               >
@@ -153,7 +160,10 @@ export function ServerCard({
           <div className="flex items-center justify-between text-xs">
             <span className="text-slate-400">Connect</span>
             <button
-              onClick={() => copyText('addr', connectStr)}
+              onClick={(e) => {
+                e.stopPropagation();
+                copyText('addr', connectStr);
+              }}
               className="flex items-center gap-1.5 font-mono-code text-slate-200 hover:text-amber-300 transition cursor-pointer"
               title="Copy server address"
             >
@@ -171,7 +181,10 @@ export function ServerCard({
               <KeyRound className="w-3.5 h-3.5 text-slate-500" /> Password
             </span>
             <button
-              onClick={() => copyText('pass', server.password)}
+              onClick={(e) => {
+                e.stopPropagation();
+                copyText('pass', server.password);
+              }}
               className="flex items-center gap-1.5 font-mono-code text-slate-300 hover:text-amber-300 transition cursor-pointer"
               title="Copy server password"
             >
@@ -190,7 +203,10 @@ export function ServerCard({
                 <Sparkles className="w-3.5 h-3.5" /> PlayFab Code
               </span>
               <button
-                onClick={() => copyText('code', server.runtime.joinCode || '')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  copyText('code', server.runtime.joinCode || '');
+                }}
                 className="flex items-center gap-1.5 font-mono-code text-sky-200 hover:text-sky-100 cursor-pointer"
               >
                 <span>{server.runtime.joinCode}</span>
@@ -272,7 +288,10 @@ export function ServerCard({
       </div>
 
       {/* Controls */}
-      <div className="flex items-center justify-between gap-2 pt-3 border-t border-slate-800/70">
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex items-center justify-between gap-2 pt-3 border-t border-slate-800/70"
+      >
         <div className="flex items-center gap-1.5">
           {!isRunning ? (
             <button
@@ -302,16 +321,16 @@ export function ServerCard({
               </button>
             </>
           )}
+          <button
+            onClick={onOpenConsole}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-semibold transition cursor-pointer"
+            title="Open Live Console & RCON Commands"
+          >
+            <Terminal className="w-3.5 h-3.5" /> RCON
+          </button>
         </div>
 
         <div className="flex items-center gap-1">
-          <button
-            onClick={onOpenConsole}
-            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-amber-300 transition cursor-pointer"
-            title="Live Console & Player Lists"
-          >
-            <Terminal className="w-4 h-4" />
-          </button>
           <button
             onClick={onBackup}
             disabled={busy}

@@ -11,6 +11,10 @@ import {
   HardDrive,
   Users,
   Wand2,
+  Terminal,
+  Send,
+  Megaphone,
+  Radio,
 } from 'lucide-react';
 import { api } from '../api';
 import type { PlayerLists, ServerConfig, WorldModifiers } from '../types';
@@ -18,11 +22,12 @@ import type { PlayerLists, ServerConfig, WorldModifiers } from '../types';
 interface ServerModalProps {
   existing?: ServerConfig | null;
   suggestedPort: number;
+  initialTab?: ModalTab;
   onClose: () => void;
   onSave: (payload: Partial<ServerConfig> & { startImmediately?: boolean }) => Promise<void>;
 }
 
-type ModalTab = 'general' | 'gameplay' | 'saves' | 'access';
+export type ModalTab = 'general' | 'rcon' | 'gameplay' | 'saves' | 'access';
 
 const emptyModifiers: WorldModifiers = {
   preset: '',
@@ -135,8 +140,17 @@ const WORLD_TOGGLES: {
   },
 ];
 
-export function ServerModal({ existing, suggestedPort, onClose, onSave }: ServerModalProps) {
-  const [activeTab, setActiveTab] = useState<ModalTab>('general');
+export function ServerModal({
+  existing,
+  suggestedPort,
+  initialTab = 'general',
+  onClose,
+  onSave,
+}: ServerModalProps) {
+  const [activeTab, setActiveTab] = useState<ModalTab>(initialTab);
+  const [rconCmd, setRconCmd] = useState('');
+  const [rconLog, setRconLog] = useState<string[]>([]);
+  const [sendingRcon, setSendingRcon] = useState(false);
   const [name, setName] = useState(existing?.name || '');
   const [description, setDescription] = useState(existing?.description || '');
   const [worldName, setWorldName] = useState(existing?.worldName || 'Midgard');
@@ -228,8 +242,23 @@ export function ServerModal({ existing, suggestedPort, onClose, onSave }: Server
     }
   };
 
+  const runRcon = async (command: string) => {
+    if (!existing?.id || !command.trim() || sendingRcon) return;
+    setSendingRcon(true);
+    setRconLog((prev) => [...prev, `> ${command.trim()}`]);
+    try {
+      const res = await api.sendRcon(existing.id, command.trim());
+      setRconLog((prev) => [...prev, (res.output || '(executed)').trim()]);
+    } catch (err) {
+      setRconLog((prev) => [...prev, `ERROR: ${(err as Error).message}`]);
+    } finally {
+      setSendingRcon(false);
+    }
+  };
+
   const tabs: { id: ModalTab; label: string; icon: typeof Server; show?: boolean }[] = [
-    { id: 'general', label: 'General & Network', icon: Server, show: true },
+    { id: 'general', label: 'General & RCON', icon: Server, show: true },
+    { id: 'rcon', label: 'RCON Commands', icon: Terminal, show: Boolean(existing) },
     { id: 'gameplay', label: 'In-Game World Rules', icon: Shield, show: true },
     { id: 'saves', label: 'Saves & Automation', icon: HardDrive, show: true },
     { id: 'access', label: 'Admins & Whitelist', icon: Users, show: Boolean(existing) },
@@ -479,6 +508,105 @@ export function ServerModal({ existing, suggestedPort, onClose, onSave }: Server
                         />
                       </div>
                     </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB: RCON COMMANDS */}
+            {activeTab === 'rcon' && existing && (
+              <div className="space-y-4">
+                <div className="rounded-xl bg-[#0b0f18] border border-slate-800 p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
+                      <Radio className="w-4 h-4" />
+                      Built-In Server-Side RCON ({rconEnabled ? `TCP :${rconPort}` : 'Disabled'})
+                    </div>
+                    <button
+                      type="button"
+                      disabled={sendingRcon}
+                      onClick={() => {
+                        const msg = prompt('Broadcast center-screen banner to all players:');
+                        if (msg && msg.trim()) runRcon(`say ${msg.trim()}`);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-semibold cursor-pointer disabled:opacity-40"
+                    >
+                      <Megaphone className="w-3.5 h-3.5" /> Broadcast In-Game Banner
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { label: 'Players & Locations', cmd: 'players' },
+                      { label: 'Server Info & Day', cmd: 'info' },
+                      { label: 'Save World Now', cmd: 'save' },
+                      { label: 'Help / Commands', cmd: 'help' },
+                    ].map((btn) => (
+                      <button
+                        key={btn.cmd}
+                        type="button"
+                        disabled={sendingRcon}
+                        onClick={() => runRcon(btn.cmd)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs text-slate-200 font-medium cursor-pointer disabled:opacity-40"
+                      >
+                        {btn.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      value={rconCmd}
+                      onChange={(e) => setRconCmd(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (rconCmd.trim()) {
+                            const toRun = rconCmd;
+                            setRconCmd('');
+                            runRcon(toRun);
+                          }
+                        }
+                      }}
+                      placeholder="Type RCON command (e.g. say Hello!, top Notice, players, save, kick Name)..."
+                      className="flex-1 rounded-xl bg-[#07090e] border border-slate-700 px-3.5 py-2 font-mono-code text-xs text-slate-100 focus:outline-none focus:border-amber-500"
+                    />
+                    <button
+                      type="button"
+                      disabled={sendingRcon || !rconCmd.trim()}
+                      onClick={() => {
+                        const toRun = rconCmd;
+                        setRconCmd('');
+                        runRcon(toRun);
+                      }}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-semibold text-xs cursor-pointer"
+                    >
+                      <Send className="w-3.5 h-3.5" /> Send
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-xl bg-[#07090e] border border-slate-800 p-4 h-60 overflow-y-auto font-mono-code text-xs space-y-1">
+                  {rconLog.length === 0 ? (
+                    <p className="text-slate-500 italic">
+                      Click any button above or type an RCON command to run it live on your server.
+                    </p>
+                  ) : (
+                    rconLog.map((line, idx) => (
+                      <div
+                        key={idx}
+                        className={`whitespace-pre-wrap break-all ${
+                          line.startsWith('ERROR:')
+                            ? 'text-rose-400'
+                            : line.startsWith('> ')
+                              ? 'text-amber-300 font-semibold'
+                              : 'text-emerald-300'
+                        }`}
+                      >
+                        {line}
+                      </div>
+                    ))
                   )}
                 </div>
               </div>
