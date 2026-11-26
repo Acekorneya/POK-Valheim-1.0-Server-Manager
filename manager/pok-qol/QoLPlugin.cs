@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.1")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.2")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -52,6 +52,7 @@ namespace POKValheimQoL
 
         private static FieldInfo _localPlayerField;
         private static MethodInfo _playerGetInvMethod;
+        private static MethodInfo _playerGetCurrentStationMethod;
 
         private static FieldInfo _containerNviewField;
         private static MethodInfo _nviewIsValidMethod;
@@ -63,7 +64,9 @@ namespace POKValheimQoL
         private static FieldInfo _pieceResourcesField;
         private static FieldInfo _pieceStationField;
         private static FieldInfo _recipeResourcesField;
+        private static FieldInfo _recipeOnlyOneField;
         private static FieldInfo _reqResItemField;
+        private static FieldInfo _reqUpgraderResourceField;
         private static MethodInfo _reqGetAmountMethod;
         private static FieldInfo _itemDropDataField;
         private static FieldInfo _itemDataSharedField;
@@ -89,6 +92,7 @@ namespace POKValheimQoL
 
         private static FieldInfo _stationNameField;
         private static FieldInfo _stationRangeBuildField;
+        private static FieldInfo _stationUpgraderField;
         private static FieldInfo _allStationsField;
         private static MethodInfo _haveBuildStationMethod;
 
@@ -140,7 +144,7 @@ namespace POKValheimQoL
             CacheReflection();
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] v1.2.2 Loaded! Pure O(1) cached Hammer UI, strict crafting station checks, craftable POK Drop-Off Chest.");
+            Logger.LogInfo("[POK-QoL] v1.3.2 Loaded! Pure O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware Forge/Bench crafting, craftable POK Drop-Off Chest.");
         }
 
         private void OnDestroy()
@@ -166,6 +170,7 @@ namespace POKValheimQoL
 
             _localPlayerField = _playerType?.GetField("m_localPlayer", BindingFlags.Public | BindingFlags.Static);
             _playerGetInvMethod = _playerType?.GetMethod("GetInventory");
+            _playerGetCurrentStationMethod = _playerType?.GetMethod("GetCurrentCraftingStation", Type.EmptyTypes);
 
             _containerNviewField = _containerType?.GetField("m_nview", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
             var nviewType = AccessTools.TypeByName("ZNetView");
@@ -178,7 +183,9 @@ namespace POKValheimQoL
             _pieceResourcesField = _pieceType?.GetField("m_resources");
             _pieceStationField = _pieceType?.GetField("m_craftingStation");
             _recipeResourcesField = _recipeType?.GetField("m_resources");
+            _recipeOnlyOneField = _recipeType?.GetField("m_requireOnlyOneIngredient");
             _reqResItemField = _reqType?.GetField("m_resItem");
+            _reqUpgraderResourceField = _reqType?.GetField("m_upgraderResource");
             _reqGetAmountMethod = _reqType?.GetMethod("GetAmount", new[] { typeof(int) });
 
             _itemDropDataField = _itemDropType?.GetField("m_itemData");
@@ -212,6 +219,7 @@ namespace POKValheimQoL
 
             _stationNameField = _craftingStationType?.GetField("m_name");
             _stationRangeBuildField = _craftingStationType?.GetField("m_rangeBuild");
+            _stationUpgraderField = _craftingStationType?.GetField("m_upgrader");
             _allStationsField = _craftingStationType?.GetField("m_allStations", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
             _haveBuildStationMethod = _craftingStationType?.GetMethod("HaveBuildStationInRange", BindingFlags.Public | BindingFlags.Static);
 
@@ -590,7 +598,7 @@ namespace POKValheimQoL
                     if (p.Length == 2)
                     {
                         var res = _haveBuildStationMethod.Invoke(null, new object[] { stationName, player.transform.position });
-                        if (res is bool b && b) { _stationsInRange.Add(stationName); return true; }
+                        if (res is bool b ? b : res != null) { _stationsInRange.Add(stationName); return true; }
                     }
                 }
                 catch { }
@@ -826,13 +834,38 @@ namespace POKValheimQoL
         // 3. CRAFT & BUILD FROM NEARBY CHESTS (Pure O(1) Cache + Strict Stations)
         // =========================================================================
 
-        private static bool HasAllResourcesCached(IEnumerable reqs, int qualityLevel, int amountMultiplier = 1)
+        private static bool IsPlayerAtUpgraderStation(Component player)
+        {
+            if (player == null || _playerGetCurrentStationMethod == null || _stationUpgraderField == null)
+                return false;
+            var currentStation = _playerGetCurrentStationMethod.Invoke(player, null);
+            if (currentStation == null) return false;
+            return _stationUpgraderField.GetValue(currentStation) is bool u && u;
+        }
+
+        private static bool ShouldSkipRequirementForStation(object req, bool isUpgraderStation)
+        {
+            if (_reqUpgraderResourceField == null) return false;
+            bool isUpgraderReq = _reqUpgraderResourceField.GetValue(req) is bool ur && ur;
+            return isUpgraderReq != isUpgraderStation;
+        }
+
+        private static bool HasAllResourcesCached(
+            IEnumerable reqs,
+            int qualityLevel,
+            int amountMultiplier = 1,
+            bool isUpgraderStation = false,
+            bool requireOnlyOne = false
+        )
         {
             if (_combinedItemCounts.Count == 0) return false;
             int mult = Math.Max(1, amountMultiplier);
 
             foreach (var req in reqs)
             {
+                if (ShouldSkipRequirementForStation(req, isUpgraderStation))
+                    continue;
+
                 var resItem = _reqResItemField?.GetValue(req);
                 if (resItem == null) continue;
                 var itemData = _itemDropDataField?.GetValue(resItem);
@@ -844,10 +877,17 @@ namespace POKValheimQoL
                     : 0) * mult;
                 if (needed <= 0) continue;
 
-                if (!_combinedItemCounts.TryGetValue(sharedName, out int total) || total < needed)
-                    return false;
+                bool hasEnough = _combinedItemCounts.TryGetValue(sharedName, out int total) && total >= needed;
+                if (requireOnlyOne)
+                {
+                    if (hasEnough) return true;
+                }
+                else
+                {
+                    if (!hasEnough) return false;
+                }
             }
-            return true;
+            return !requireOnlyOne;
         }
 
         private static void Player_HaveRequirements_Piece_Postfix(
@@ -917,7 +957,9 @@ namespace POKValheimQoL
 
                 var reqs = _recipeResourcesField?.GetValue(__0) as IEnumerable;
                 int amount = (__args != null && __args.Length > 3 && __args[3] is int a) ? a : 1;
-                if (reqs != null && HasAllResourcesCached(reqs, __2, amount))
+                bool isUpgrader = IsPlayerAtUpgraderStation(player);
+                bool requireOnlyOne = _recipeOnlyOneField != null && (_recipeOnlyOneField.GetValue(__0) is bool o && o);
+                if (reqs != null && HasAllResourcesCached(reqs, __2, amount, isUpgrader, requireOnlyOne))
                 {
                     __result = true;
                 }
@@ -951,9 +993,11 @@ namespace POKValheimQoL
                 }
 
                 var chests = FindNearbyContainers(player.transform.position, CraftRadius.Value);
+                bool isUpgrader = IsPlayerAtUpgraderStation(player);
 
                 foreach (var req in requirements)
                 {
+                    if (ShouldSkipRequirementForStation(req, isUpgrader)) continue;
                     var resItem = _reqResItemField?.GetValue(req) as Component;
                     if (resItem == null) continue;
                     var itemData = _itemDropDataField?.GetValue(resItem);
