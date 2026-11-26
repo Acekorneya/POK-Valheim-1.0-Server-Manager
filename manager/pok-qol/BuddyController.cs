@@ -63,6 +63,9 @@ namespace POKValheimQoL
         private static MethodInfo _charGetMaxHpMethod;
         private static Type _humanoidType;
         private static MethodInfo _humanoidStartAttackMethod;
+        private static MethodInfo _humanoidGetVisEquipMethod;
+        private static MethodInfo _visSetRightItemMethod;
+        private static string _currentHandItem = "";
         private static Type _baseAiType;
         private static MethodInfo _baseAiMoveToMethod;
         private static MethodInfo _baseAiStopMovingMethod;
@@ -161,6 +164,9 @@ namespace POKValheimQoL
 
             _humanoidType = AccessTools.TypeByName("Humanoid");
             _humanoidStartAttackMethod = _humanoidType?.GetMethod("StartAttack", new[] { _charType ?? typeof(object), typeof(bool) });
+            _humanoidGetVisEquipMethod = _humanoidType?.GetMethod("GetVisEquipment", Type.EmptyTypes);
+            var visType = AccessTools.TypeByName("VisEquipment");
+            _visSetRightItemMethod = visType?.GetMethod("SetRightItem", new[] { typeof(string) });
 
             _baseAiType = AccessTools.TypeByName("BaseAI");
             _baseAiMoveToMethod = _baseAiType?.GetMethod("MoveTo", new[] { typeof(float), typeof(Vector3), typeof(float), typeof(bool) });
@@ -194,6 +200,22 @@ namespace POKValheimQoL
 
             _craftingStationType = AccessTools.TypeByName("CraftingStation");
             _allStationsField = _craftingStationType?.GetField("m_allStations", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        }
+
+        private static void EquipVisualTool(string itemPrefabName)
+        {
+            if (_buddyHumanoid == null || _humanoidGetVisEquipMethod == null || _visSetRightItemMethod == null) return;
+            if (_currentHandItem == itemPrefabName) return;
+            try
+            {
+                var vis = _humanoidGetVisEquipMethod.Invoke(_buddyHumanoid, null);
+                if (vis != null)
+                {
+                    _visSetRightItemMethod.Invoke(vis, new object[] { itemPrefabName });
+                    _currentHandItem = itemPrefabName;
+                }
+            }
+            catch { }
         }
 
         private static string GetName() => string.IsNullOrWhiteSpace(BuddyName?.Value) ? "Bjorn" : BuddyName.Value.Trim();
@@ -328,6 +350,8 @@ namespace POKValheimQoL
                 }
 
                 _monsterAiSetFollowMethod?.Invoke(_buddyMonsterAi, new object[] { player.gameObject });
+                _currentHandItem = "";
+                EquipVisualTool("AxeBronze");
                 _axeDurability = 100;
                 _activeTask = new BuddyTask { Action = "follow" };
                 _taskQueue.Clear();
@@ -613,6 +637,7 @@ namespace POKValheimQoL
 
         private static void TickHarvest(float dt, bool isWood)
         {
+            EquipVisualTool(isWood ? "AxeBronze" : "PickaxeBronze");
             _monsterAiSetFollowMethod?.Invoke(_buddyMonsterAi, new object[] { null });
             Vector3 bPos = _buddyGo.transform.position;
             int targetAmt = Math.Max(5, _activeTask.Amount);
