@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.4")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.0")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -22,6 +22,8 @@ namespace POKValheimQoL
         public static ConfigEntry<bool> AllowSignTagFallback;
         public static ConfigEntry<string> DropOffTag;
         public static ConfigEntry<float> DropOffRadius;
+        public static ConfigEntry<bool> DropOffUseEmptySlots;
+        public static ConfigEntry<bool> DropOffAutoOrganizeChests;
         public static ConfigEntry<bool> EnableQuickStackHotkey;
         public static ConfigEntry<KeyCode> QuickStackKey;
         public static ConfigEntry<bool> EnableCraftFromChests;
@@ -68,10 +70,15 @@ namespace POKValheimQoL
         private static FieldInfo _itemDataStackField;
         private static FieldInfo _itemDataEquippedField;
         private static FieldInfo _itemDataGridPosField;
+        private static FieldInfo _gridPosXField;
         private static FieldInfo _gridPosYField;
         private static FieldInfo _sharedNameField;
+        private static FieldInfo _sharedItemTypeField;
 
         private static MethodInfo _invGetAllItemsMethod;
+        private static MethodInfo _invGetWidthMethod;
+        private static MethodInfo _invGetHeightMethod;
+        private static MethodInfo _invHaveEmptySlotMethod;
         private static MethodInfo _invCountItemsMethod;
         private static int _invCountItemsParamLen;
         private static MethodInfo _invRemoveItemMethod;
@@ -115,6 +122,10 @@ namespace POKValheimQoL
                 "Optional Sign text (within 3m of a chest) if AllowSignTagFallback is enabled.");
             DropOffRadius = Config.Bind("1. Drop-Off Auto-Sort", "SortRadiusMeters", 20f,
                 "Radius (in meters) to search for destination chests.");
+            DropOffUseEmptySlots = Config.Bind("1. Drop-Off Auto-Sort", "UseEmptySlotsForNewItems", true,
+                "If no chest already holds an item (or matching chests are full), place it into a nearby chest with the same item category or any chest with empty slots.");
+            DropOffAutoOrganizeChests = Config.Bind("1. Drop-Off Auto-Sort", "AutoOrganizeChests", true,
+                "Automatically sort and organize items cleanly inside destination chests after drop-off sorting.");
 
             EnableQuickStackHotkey = Config.Bind("2. Quick-Stack Hotkey", "Enabled", true,
                 "Press LeftAlt + QuickStackKey to automatically store matching inventory items (skipping hotbar & equipped gear) into nearby chests.");
@@ -175,10 +186,15 @@ namespace POKValheimQoL
             _itemDataStackField = _itemDataType?.GetField("m_stack");
             _itemDataEquippedField = _itemDataType?.GetField("m_equipped");
             _itemDataGridPosField = _itemDataType?.GetField("m_gridPos");
+            _gridPosXField = _itemDataGridPosField?.FieldType?.GetField("x");
             _gridPosYField = _itemDataGridPosField?.FieldType?.GetField("y");
             _sharedNameField = _sharedDataType?.GetField("m_name");
+            _sharedItemTypeField = _sharedDataType?.GetField("m_itemType");
 
             _invGetAllItemsMethod = _inventoryType?.GetMethod("GetAllItems", Type.EmptyTypes);
+            _invGetWidthMethod = _inventoryType?.GetMethod("GetWidth", Type.EmptyTypes);
+            _invGetHeightMethod = _inventoryType?.GetMethod("GetHeight", Type.EmptyTypes);
+            _invHaveEmptySlotMethod = _inventoryType?.GetMethod("HaveEmptySlot", Type.EmptyTypes);
             _invCountItemsMethod = _inventoryType?.GetMethod("CountItems", new[] { typeof(string), typeof(int), typeof(bool) })
                                 ?? _inventoryType?.GetMethod("CountItems", new[] { typeof(string), typeof(int) });
             _invCountItemsParamLen = _invCountItemsMethod?.GetParameters().Length ?? 0;
@@ -582,8 +598,73 @@ namespace POKValheimQoL
             return false;
         }
 
+        private static int GetItemTypeInt(object item)
+        {
+            var shared = _itemDataSharedField?.GetValue(item);
+            var t = _sharedItemTypeField?.GetValue(shared);
+            return t != null ? Convert.ToInt32(t) : 0;
+        }
+
+        private static bool InventoryHasItemType(object inventory, int itemType)
+        {
+            var items = _invGetAllItemsMethod?.Invoke(inventory, null) as IEnumerable;
+            if (items == null) return false;
+            foreach (var item in items)
+                if (GetItemTypeInt(item) == itemType) return true;
+            return false;
+        }
+
+        private static bool InventoryHasEmptySlot(object inventory)
+        {
+            if (_invHaveEmptySlotMethod != null)
+            {
+                var res = _invHaveEmptySlotMethod.Invoke(inventory, null);
+                if (res is bool b) return b;
+            }
+            return true;
+        }
+
+        private static void OrganizeInventoryGrid(object inventory)
+        {
+            if (!DropOffAutoOrganizeChests.Value || inventory == null) return;
+            if (_invGetAllItemsMethod == null || _invGetWidthMethod == null || _itemDataGridPosField == null || _gridPosXField == null || _gridPosYField == null)
+                return;
+            try
+            {
+                var itemsEnum = _invGetAllItemsMethod.Invoke(inventory, null) as IEnumerable;
+                if (itemsEnum == null) return;
+                var items = new List<object>();
+                foreach (var it in itemsEnum) items.Add(it);
+                if (items.Count <= 1) return;
+
+                int width = (int)_invGetWidthMethod.Invoke(inventory, null);
+                int height = _invGetHeightMethod != null ? (int)_invGetHeightMethod.Invoke(inventory, null) : 4;
+                if (width <= 0 || items.Count > width * height) return;
+
+                // Sort cleanly by ItemType -> SharedName -> largest stack first
+                items.Sort((a, b) =>
+                {
+                    int tc = GetItemTypeInt(a).CompareTo(GetItemTypeInt(b));
+                    if (tc != 0) return tc;
+                    int nc = string.CompareOrdinal(GetItemSharedName(a), GetItemSharedName(b));
+                    if (nc != 0) return nc;
+                    return GetItemStack(b).CompareTo(GetItemStack(a));
+                });
+
+                var gridPosType = _itemDataGridPosField.FieldType;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    object gp = Activator.CreateInstance(gridPosType);
+                    _gridPosXField.SetValue(gp, i % width);
+                    _gridPosYField.SetValue(gp, i / width);
+                    _itemDataGridPosField.SetValue(items[i], gp);
+                }
+            }
+            catch { }
+        }
+
         // =========================================================================
-        // 1. DROP-OFF AUTO-SORT CHEST
+        // 1. DROP-OFF AUTO-SORT CHEST (3-Pass: Exact Match -> Same Category -> Empty Slot)
         // =========================================================================
 
         private static void Container_SetInUse_Postfix(object __instance, bool inUse)
@@ -603,36 +684,79 @@ namespace POKValheimQoL
                 foreach (var it in itemsEnum) srcItems.Add(it);
                 if (srcItems.Count == 0) return;
 
-                var targets = FindNearbyContainers(container.transform.position, DropOffRadius.Value, container)
+                var origin = container.transform.position;
+                var targets = FindNearbyContainers(origin, DropOffRadius.Value, container)
                     .Where(c => !IsDropOffContainer(c))
+                    .OrderBy(c => (c.transform.position - origin).sqrMagnitude)
                     .ToList();
 
                 int movedStacks = 0;
+                var modifiedChests = new HashSet<Component>();
+
+                bool TryMoveTo(object item, Component target)
+                {
+                    var dstInv = GetContainerInventory(target);
+                    if (dstInv == null) return false;
+                    if (_invAddItemDataMethod.Invoke(dstInv, new[] { item }) is bool ok && ok)
+                    {
+                        _invRemoveItemDataMethod.Invoke(srcInv, new[] { item });
+                        modifiedChests.Add(target);
+                        movedStacks++;
+                        return true;
+                    }
+                    return false;
+                }
+
                 foreach (var item in srcItems)
                 {
                     string name = GetItemSharedName(item);
                     if (string.IsNullOrEmpty(name)) continue;
+                    bool placed = false;
 
+                    // Pass 1: Chest that ALREADY has this exact item
                     foreach (var target in targets)
                     {
                         var dstInv = GetContainerInventory(target);
                         if (dstInv == null || !InventoryHasItemNamed(dstInv, name)) continue;
+                        if (TryMoveTo(item, target)) { placed = true; break; }
+                    }
 
-                        if (_invAddItemDataMethod.Invoke(dstInv, new[] { item }) is bool ok && ok)
+                    if (!placed && DropOffUseEmptySlots.Value)
+                    {
+                        int itemType = GetItemTypeInt(item);
+
+                        // Pass 2: Chest with empty slots that holds items of the SAME category (e.g. Food, Material, Trophy)
+                        foreach (var target in targets)
                         {
-                            _invRemoveItemDataMethod.Invoke(srcInv, new[] { item });
-                            SaveContainer(target);
-                            movedStacks++;
-                            break;
+                            var dstInv = GetContainerInventory(target);
+                            if (dstInv == null || !InventoryHasEmptySlot(dstInv)) continue;
+                            if (!InventoryHasItemType(dstInv, itemType)) continue;
+                            if (TryMoveTo(item, target)) { placed = true; break; }
+                        }
+
+                        // Pass 3: Any nearest chest with an empty slot
+                        if (!placed)
+                        {
+                            foreach (var target in targets)
+                            {
+                                var dstInv = GetContainerInventory(target);
+                                if (dstInv == null || !InventoryHasEmptySlot(dstInv)) continue;
+                                if (TryMoveTo(item, target)) { placed = true; break; }
+                            }
                         }
                     }
                 }
 
                 if (movedStacks > 0)
                 {
+                    foreach (var chest in modifiedChests)
+                    {
+                        OrganizeInventoryGrid(GetContainerInventory(chest));
+                        SaveContainer(chest);
+                    }
                     SaveContainer(container);
                     _cacheExpiresAt = -1f;
-                    ShowHudMessage($"[POK-QoL] Auto-sorted {movedStacks} stack(s) into nearby chests!");
+                    ShowHudMessage($"[POK-QoL] Sorted & organized {movedStacks} stack(s) into {modifiedChests.Count} chest(s)!");
                 }
             }
             catch (Exception ex)
