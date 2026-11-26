@@ -612,80 +612,146 @@ class ModService {
       archive.directory(patchersDir, 'payload/BepInEx/patchers');
     }
 
-    // 4. Add 1-Click Windows Auto-Installer (.bat)
+    // 4. Add bulletproof 1-Click Windows Auto-Installer (Install-POK-Mods.bat -> install.ps1)
+    const installPs1 = `$ErrorActionPreference = 'Stop'
+Write-Host "============================================================" -ForegroundColor Yellow
+Write-Host "  POK-Valheim 1-Click Mod Installer" -ForegroundColor Yellow
+Write-Host "  Realm: ${server.name.replace(/"/g, "'")}" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Yellow
+Write-Host ""
+
+function Find-ValheimDir {
+  $steamRoots = @()
+
+  # 1. Read Steam install path from Windows Registry (HKCU + HKLM)
+  foreach ($regPath in @(
+    'HKCU:\\Software\\Valve\\Steam',
+    'HKLM:\\SOFTWARE\\WOW6432Node\\Valve\\Steam',
+    'HKLM:\\SOFTWARE\\Valve\\Steam'
+  )) {
+    try {
+      $props = Get-ItemProperty -Path $regPath -ErrorAction Stop
+      foreach ($propName in @('SteamPath', 'InstallPath')) {
+        $val = $props.$propName
+        if ($val -and (Test-Path $val)) {
+          $steamRoots += ($val -replace '/', '\\')
+        }
+      }
+    } catch {}
+  }
+
+  # 2. Parse Steam's libraryfolders.vdf (finds ANY custom Steam library on ANY drive!)
+  $allLibraries = @()
+  foreach ($root in ($steamRoots | Select-Object -Unique)) {
+    $allLibraries += $root
+    $vdf = Join-Path $root 'steamapps\\libraryfolders.vdf'
+    if (Test-Path $vdf) {
+      Get-Content $vdf -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_ -match '"path"\\s+"([^"]+)"') {
+          $libPath = $matches[1] -replace '\\\\\\\\', '\\'
+          if (Test-Path $libPath) { $allLibraries += $libPath }
+        }
+      }
+    }
+  }
+
+  # 3. Also scan common Steam library locations across all local drives
+  foreach ($drv in (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\\\$' })) {
+    foreach ($sub in @('Program Files (x86)\\Steam', 'Program Files\\Steam', 'Steam', 'SteamLibrary', 'Games\\Steam', 'Games\\SteamLibrary')) {
+      $p = Join-Path $drv.Root $sub
+      if (Test-Path $p) { $allLibraries += $p }
+    }
+  }
+
+  foreach ($lib in ($allLibraries | Select-Object -Unique)) {
+    $cand = Join-Path $lib 'steamapps\\common\\Valheim'
+    if (Test-Path (Join-Path $cand 'valheim.exe')) {
+      return $cand
+    }
+  }
+  return $null
+}
+
+$valheimDir = Find-ValheimDir
+
+if (-not $valheimDir) {
+  Write-Host "Could not auto-detect your Valheim folder." -ForegroundColor Yellow
+  $valheimDir = Read-Host "Paste your Valheim folder path (containing valheim.exe)"
+  $valheimDir = $valheimDir.Trim('"').Trim()
+}
+
+if (-not $valheimDir -or -not (Test-Path (Join-Path $valheimDir 'valheim.exe'))) {
+  Write-Host ""
+  Write-Host "[ERROR] valheim.exe not found in: $valheimDir" -ForegroundColor Red
+  Read-Host "Press Enter to exit"
+  exit 1
+}
+
+Write-Host "Found Valheim at: $valheimDir" -ForegroundColor Green
+Write-Host "Installing BepInEx and realm mods..." -ForegroundColor Cyan
+
+$payloadDir = Join-Path $PSScriptRoot 'payload'
+Copy-Item -Path (Join-Path $payloadDir '*') -Destination $valheimDir -Recurse -Force
+
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host "  SUCCESS! Mods installed for '${server.name.replace(/'/g, '')}'!" -ForegroundColor Green
+Write-Host "  Launch Valheim from Steam normally and join the server!" -ForegroundColor White
+Write-Host "  (Run Uninstall-POK-Mods.bat anytime to return to vanilla)" -ForegroundColor Gray
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host ""
+Read-Host "Press Enter to close"
+`.replace(/\n/g, '\r\n');
+
+    const uninstallPs1 = `$ErrorActionPreference = 'Stop'
+Write-Host "============================================================" -ForegroundColor Yellow
+Write-Host "  POK-Valheim Mod Uninstaller (Return to 100% Vanilla)" -ForegroundColor Yellow
+Write-Host "============================================================" -ForegroundColor Yellow
+Write-Host ""
+
+$steamRoots = @('C:\\Program Files (x86)\\Steam')
+try {
+  $sp = (Get-ItemProperty -Path 'HKCU:\\Software\\Valve\\Steam' -ErrorAction Stop).SteamPath
+  if ($sp) { $steamRoots += ($sp -replace '/', '\\') }
+} catch {}
+
+$libs = @()
+foreach ($r in ($steamRoots | Select-Object -Unique)) {
+  $libs += $r
+  $vdf = Join-Path $r 'steamapps\\libraryfolders.vdf'
+  if (Test-Path $vdf) {
+    Get-Content $vdf -ErrorAction SilentlyContinue | ForEach-Object {
+      if ($_ -match '"path"\\s+"([^"]+)"') { $libs += ($matches[1] -replace '\\\\\\\\', '\\') }
+    }
+  }
+}
+
+$valheimDir = $null
+foreach ($lib in ($libs | Select-Object -Unique)) {
+  $cand = Join-Path $lib 'steamapps\\common\\Valheim'
+  if (Test-Path (Join-Path $cand 'valheim.exe')) { $valheimDir = $cand; break }
+}
+
+if (-not $valheimDir) {
+  $valheimDir = (Read-Host "Paste your Valheim folder path").Trim('"').Trim()
+}
+
+foreach ($item in @('BepInEx', 'winhttp.dll', 'doorstop_config.ini', '.doorstop_version')) {
+  $p = Join-Path $valheimDir $item
+  if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
+}
+
+Write-Host ""
+Write-Host "Done! Valheim at $valheimDir is back to 100% vanilla." -ForegroundColor Green
+Read-Host "Press Enter to close"
+`.replace(/\n/g, '\r\n');
+
     const installBat = `@echo off
-setlocal enabledelayedexpansion
-title POK-Valheim 1-Click Client Mod Installer (${server.name})
-echo ============================================================
-echo   POK-Valheim 1-Click Mod Installer
-echo   Realm: ${server.name}
-echo ============================================================
-echo.
-
-set "VALHEIM_DIR="
-
-:: 1. Check default Steam path
-if exist "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Valheim\\valheim.exe" (
-  set "VALHEIM_DIR=C:\\Program Files (x86)\\Steam\\steamapps\\common\\Valheim"
-)
-
-:: 2. Check Steam registry + libraryfolders.vdf across all drives via PowerShell
-if not defined VALHEIM_DIR (
-  for /f "usebackq delims=" %%I in (\`powershell -NoProfile -Command "$paths=@(); try { $sp=(Get-ItemProperty 'HKCU:\\Software\\Valve\\Steam' -ErrorAction Stop).SteamPath; if($sp){$paths+=$sp} } catch {}; $vdf=Join-Path $paths[0] 'steamapps\\libraryfolders.vdf'; if(Test-Path $vdf){ Get-Content $vdf | ForEach-Object { if($_ -match '\"path\"\\s+\"([^\"]+)\"'){ $paths += ($matches[1] -replace '\\\\\\\\','\\') } } }; foreach($d in 'C','D','E','F','G','H','J'){ $paths += ($d + ':\\SteamLibrary'); $paths += ($d + ':\\Games\\Steam') }; foreach($p in ($paths | Select-Object -Unique)){ $cand = Join-Path $p 'steamapps\\common\\Valheim'; if(Test-Path (Join-Path $cand 'valheim.exe')){ Write-Output $cand; break } }"\`) do (
-    set "VALHEIM_DIR=%%I"
-  )
-)
-
-if not defined VALHEIM_DIR (
-  echo Could not auto-detect your Valheim folder.
-  set /p "VALHEIM_DIR=Paste your Valheim folder path (containing valheim.exe): "
-)
-
-set "VALHEIM_DIR=%VALHEIM_DIR:"=%"
-if not exist "%VALHEIM_DIR%\\valheim.exe" (
-  echo.
-  echo [ERROR] valheim.exe not found in: "%VALHEIM_DIR%"
-  pause
-  exit /b 1
-)
-
-echo Found Valheim at: "%VALHEIM_DIR%"
-echo.
-echo Installing BepInEx and realm mods...
-xcopy "%~dp0payload\\*" "%VALHEIM_DIR%\\" /E /Y /I >nul
-
-echo.
-echo ============================================================
-echo   SUCCESS! Mods installed for "${server.name}"!
-echo   Just launch Valheim from Steam normally and join!
-echo   (To revert to vanilla anytime, run Uninstall-POK-Mods.bat)
-echo ============================================================
-echo.
-pause
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 `.replace(/\n/g, '\r\n');
 
     const uninstallBat = `@echo off
-setlocal
-title POK-Valheim Mod Uninstaller
-echo ============================================================
-echo   POK-Valheim Mod Uninstaller (Revert to 100%% Vanilla)
-echo ============================================================
-echo.
-for /f "usebackq delims=" %%I in (\`powershell -NoProfile -Command "$paths=@('C:\\Program Files (x86)\\Steam'); try { $sp=(Get-ItemProperty 'HKCU:\\Software\\Valve\\Steam' -ErrorAction Stop).SteamPath; if($sp){$paths+=$sp} } catch {}; $vdf=Join-Path $paths[0] 'steamapps\\libraryfolders.vdf'; if(Test-Path $vdf){ Get-Content $vdf | ForEach-Object { if($_ -match '\"path\"\\s+\"([^\"]+)\"'){ $paths += ($matches[1] -replace '\\\\\\\\','\\') } } }; foreach($d in 'C','D','E','F','G','H','J'){ $paths += ($d + ':\\SteamLibrary') }; foreach($p in ($paths | Select-Object -Unique)){ $cand = Join-Path $p 'steamapps\\common\\Valheim'; if(Test-Path (Join-Path $cand 'valheim.exe')){ Write-Output $cand; break } }"\`) do set "VALHEIM_DIR=%%I"
-
-if not defined VALHEIM_DIR (
-  set /p "VALHEIM_DIR=Paste your Valheim folder path: "
-)
-set "VALHEIM_DIR=%VALHEIM_DIR:"=%"
-
-if exist "%VALHEIM_DIR%\\BepInEx" rmdir /S /Q "%VALHEIM_DIR%\\BepInEx"
-if exist "%VALHEIM_DIR%\\winhttp.dll" del /F /Q "%VALHEIM_DIR%\\winhttp.dll"
-if exist "%VALHEIM_DIR%\\doorstop_config.ini" del /F /Q "%VALHEIM_DIR%\\doorstop_config.ini"
-if exist "%VALHEIM_DIR%\\.doorstop_version" del /F /Q "%VALHEIM_DIR%\\.doorstop_version"
-
-echo.
-echo Done! Valheim is back to 100%% vanilla.
-pause
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall.ps1"
 `.replace(/\n/g, '\r\n');
 
     const readmeTxt = `POK-Valheim Client Modpack for "${server.name}"
@@ -694,12 +760,13 @@ pause
 HOW TO INSTALL (Takes 5 seconds):
 1. Extract this entire .zip file to any folder.
 2. Double-click "Install-POK-Mods.bat".
+   (Automatically finds Valheim on ANY Steam drive/library!)
 3. Launch Valheim from Steam normally and join the server!
 
 HOW TO USE POK-Valheim QoL (if included):
-- Drop-Off Auto-Sort Chest: Place a Sign next to a chest and write [DROPOFF] on it.
-  Dump your loot in that chest and close it — items automatically fly into nearby
-  chests (within 20m) that already contain that item!
+- POK Drop-Off Chest: Craft a copper-tinted "POK Drop-Off Chest" in the Hammer
+  (Furniture tab, 10 Fine Wood + 4 Copper). Dump your loot inside and close it —
+  items automatically fly into nearby chests (within 20m) that already have that item!
 - Quick-Stack Hotkey: Press Alt + G near your storage room to store matching items.
 - Craft & Build From Chests: Just build or craft normally — materials pull automatically
   from nearby chests within 15m!
@@ -709,7 +776,9 @@ HOW TO UNINSTALL:
 `.replace(/\n/g, '\r\n');
 
     archive.append(installBat, { name: 'Install-POK-Mods.bat' });
+    archive.append(installPs1, { name: 'install.ps1' });
     archive.append(uninstallBat, { name: 'Uninstall-POK-Mods.bat' });
+    archive.append(uninstallPs1, { name: 'uninstall.ps1' });
     archive.append(readmeTxt, { name: 'README-HOW-TO-INSTALL.txt' });
 
     await archive.finalize();
