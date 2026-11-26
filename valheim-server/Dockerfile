@@ -1,4 +1,12 @@
-# POK-Valheim Dedicated Linux Server Image
+# Stage 1: Build POK-Valheim-Bridge (100% Server-Side RCON BepInEx Plugin)
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS bridge-builder
+WORKDIR /src
+COPY pok-bridge/POKValheimBridge.csproj ./
+RUN dotnet restore
+COPY pok-bridge/ ./
+RUN dotnet build -c Release -o /out --no-restore
+
+# Stage 2: POK-Valheim Dedicated Linux Server Image
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -30,6 +38,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     KEY_FIRE=false \
     KEY_DUNGEONBUILD=false \
     MODS_ENABLED=false \
+    POK_RCON_ENABLED=false \
+    POK_RCON_PORT=2458 \
+    POK_RCON_PASSWORD="" \
     EXTRA_ARGS="" \
     TZ=UTC
 
@@ -49,10 +60,11 @@ RUN dpkg --add-architecture i386 && \
       tar \
       gzip && \
     rm -rf /var/lib/apt/lists/* && \
-    mkdir -p "${STEAMCMD_DIR}" "${VALHEIM_DIR}" "${CONFIG_DIR}/worlds_local" && \
+    mkdir -p "${STEAMCMD_DIR}" "${VALHEIM_DIR}" "${CONFIG_DIR}/worlds_local" /opt/pok-bridge && \
     curl -fsSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar -xz -C "${STEAMCMD_DIR}" && \
     "${STEAMCMD_DIR}/steamcmd.sh" +quit || true
 
+COPY --from=bridge-builder /out/POKValheimBridge.dll /opt/pok-bridge/POKValheimBridge.dll
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 

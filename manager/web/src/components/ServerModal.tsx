@@ -438,11 +438,12 @@ export function ServerModal({ existing, suggestedPort, onClose, onSave }: Server
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-xs font-semibold text-slate-200">
-                        Enable RCON Port Mapping (Optional — for RCON Mods)
+                        Enable Built-In Server-Side RCON (Vanilla Clients Supported)
                       </div>
                       <div className="text-[11px] text-slate-400">
-                        Maps a TCP RCON port on this container so you can send in-game chat &amp;
-                        admin commands from the Live Console.
+                        Auto-installs POK-Valheim Bridge on this server so you can broadcast
+                        in-game banners, check live player (X, Y, Z) coordinates, and run admin
+                        commands from the Live Console — no client mods required.
                       </div>
                     </div>
                     <input

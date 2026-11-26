@@ -199,6 +199,24 @@ class UpdateService {
       }
     }
 
+    // Also broadcast to any individual realm that has Built-In RCON enabled
+    for (const srv of store.getServers()) {
+      if (srv.rconEnabled && srv.rconPort && srv.rconPassword) {
+        try {
+          const host = config.publicHost || '127.0.0.1';
+          const template = policy.rconCommandTemplate?.trim() || 'say {message}';
+          const cmd = template.replace(/\{message\}/g, message);
+          await sendRconCommand(
+            { host, port: Number(srv.rconPort), password: srv.rconPassword },
+            cmd
+          );
+          results.rcon = 'sent';
+        } catch {
+          // ignore if server is stopped
+        }
+      }
+    }
+
     return results;
   }
 

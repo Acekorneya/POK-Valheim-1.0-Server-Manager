@@ -131,8 +131,15 @@ fi
 export LD_LIBRARY_PATH="${VALHEIM_DIR}/linux64:${LD_LIBRARY_PATH:-}"
 export SteamAppId=892970
 
+# Install built-in server-side POK-Valheim-Bridge plugin when RCON is enabled
+if [[ "${POK_RCON_ENABLED:-false}" == "true" ]] && [[ -f "/opt/pok-bridge/POKValheimBridge.dll" ]]; then
+  mkdir -p "${CONFIG_DIR}/mods/BepInEx/plugins/POKValheimBridge"
+  cp -f /opt/pok-bridge/POKValheimBridge.dll "${CONFIG_DIR}/mods/BepInEx/plugins/POKValheimBridge/POKValheimBridge.dll"
+  log "Built-in POK-Valheim Bridge (Server-Side RCON on TCP ${POK_RCON_PORT:-2458}) ready."
+fi
+
 # Optional per-server BepInEx mod loader (isolated in /config/mods)
-if [[ "${MODS_ENABLED:-false}" == "true" ]] && [[ -f "${CONFIG_DIR}/mods/BepInEx/core/BepInEx.Preloader.dll" ]]; then
+if ([[ "${MODS_ENABLED:-false}" == "true" ]] || [[ "${POK_RCON_ENABLED:-false}" == "true" ]]) && [[ -f "${CONFIG_DIR}/mods/BepInEx/core/BepInEx.Preloader.dll" ]]; then
   log "BepInEx mod loader ENABLED from ${CONFIG_DIR}/mods/BepInEx"
   export DOORSTOP_ENABLE=TRUE
   export DOORSTOP_ENABLED=1

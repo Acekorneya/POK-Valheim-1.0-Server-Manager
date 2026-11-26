@@ -110,6 +110,9 @@ class DockerService {
       `KEY_FIRE=${m.fire ? 'true' : 'false'}`,
       `KEY_DUNGEONBUILD=${m.dungeonBuild ? 'true' : 'false'}`,
       `MODS_ENABLED=${server.modsEnabled ? 'true' : 'false'}`,
+      `POK_RCON_ENABLED=${server.rconEnabled ? 'true' : 'false'}`,
+      `POK_RCON_PORT=${server.rconPort || server.port + 2}`,
+      `POK_RCON_PASSWORD=${server.rconPassword || ''}`,
       `EXTRA_ARGS=${server.extraArgs || ''}`,
     ];
   }

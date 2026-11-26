@@ -9,9 +9,9 @@ interface ConsoleModalProps {
 }
 
 const QUICK_RCON_CMDS = [
+  { label: 'Players & Coords', cmd: 'players' },
+  { label: 'Server Info', cmd: 'info' },
   { label: 'Save World', cmd: 'save' },
-  { label: 'Players', cmd: 'list' },
-  { label: 'Info', cmd: 'info' },
   { label: 'Help', cmd: 'help' },
 ];
 
@@ -266,7 +266,7 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
                 </div>
                 {!server.rconEnabled && (
                   <span className="text-[11px] text-slate-500">
-                    Requires RCON mod (Mods tab) + RCON enabled in Server Settings
+                    Enable Built-In RCON in Server Settings (100% server-side, vanilla clients supported)
                   </span>
                 )}
               </div>

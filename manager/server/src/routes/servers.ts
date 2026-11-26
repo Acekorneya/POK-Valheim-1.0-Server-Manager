@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { store } from '../store.js';
 import { dockerService } from '../dockerService.js';
 import { worldService } from '../worldService.js';
+import { modService } from '../modService.js';
 import { sendRconCommand } from '../notificationService.js';
 import { getServerConfigDir } from '../config.js';
 import type { ServerConfig, ServerWithStatus, WorldModifiers } from '../types.js';
@@ -115,6 +116,13 @@ serversRouter.post('/', async (req, res) => {
     fs.mkdirSync(getServerConfigDir(server.id), { recursive: true });
     store.addServer(server);
 
+    if (server.rconEnabled) {
+      const modState = modService.getServerModsState(server.id);
+      if (!modState.bepInExInstalled) {
+        await modService.installThunderstoreMod(server.id, 'denikson-BepInExPack_Valheim', false);
+      }
+    }
+
     if (dockerService.isAvailable()) {
       await dockerService.createOrRecreateContainer(server, Boolean(body.startImmediately));
     }
@@ -177,6 +185,13 @@ serversRouter.put('/:id', async (req, res) => {
     };
 
     store.updateServer(existing.id, updated);
+
+    if (updated.rconEnabled) {
+      const modState = modService.getServerModsState(existing.id);
+      if (!modState.bepInExInstalled) {
+        await modService.installThunderstoreMod(existing.id, 'denikson-BepInExPack_Valheim', false);
+      }
+    }
 
     if (dockerService.isAvailable() && body.recreateContainer !== false) {
       const status = await dockerService.getServerRuntimeStatus(existing.id);
