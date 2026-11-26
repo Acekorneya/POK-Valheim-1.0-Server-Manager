@@ -114,6 +114,17 @@ namespace POKValheimQoL
                 }
                 catch { }
             }
+
+            // Override MonsterAI.UpdateAI for our Buddy so vanilla idle/wander AI never fights our task movement!
+            var updateAi = AccessTools.Method("MonsterAI:UpdateAI");
+            if (updateAi != null)
+            {
+                try
+                {
+                    harmony.Patch(updateAi, prefix: new HarmonyMethod(typeof(BuddyController), nameof(MonsterAI_UpdateAI_Prefix)));
+                }
+                catch { }
+            }
         }
 
         private static void CacheReflection()
@@ -186,9 +197,28 @@ namespace POKValheimQoL
             {
                 SummonOrTeleportBuddy();
             }
+        }
 
-            if (_buddyGo == null) return;
-            TickBuddyBrain(Time.deltaTime);
+        // Runs inside Valheim's FixedUpdate AI tick — completely replaces vanilla Dverger wander/idle while executing tasks!
+        private static bool MonsterAI_UpdateAI_Prefix(object __instance, float __0, ref bool __result)
+        {
+            if (_buddyMonsterAi == null || !ReferenceEquals(__instance, _buddyMonsterAi))
+                return true;
+
+            if (_buddyGo == null) return true;
+
+            // Let vanilla MonsterAI handle combat when in "guard" mode
+            if (_activeTask != null && _activeTask.Action == "guard")
+                return true;
+
+            try
+            {
+                TickBuddyBrain(__0 > 0f ? __0 : Time.fixedDeltaTime);
+            }
+            catch { }
+
+            __result = true;
+            return false; // Skip vanilla MonsterAI idle/wander so it NEVER paces back and forth!
         }
 
         private static void Chat_SendText_Prefix(object __0, string __1)
@@ -510,11 +540,17 @@ namespace POKValheimQoL
             }
         }
 
+        private static float FlatDist(Vector3 a, Vector3 b)
+        {
+            float dx = a.x - b.x;
+            float dz = a.z - b.z;
+            return Mathf.Sqrt(dx * dx + dz * dz);
+        }
+
         private static void TickHarvest(float dt, bool isWood)
         {
             _monsterAiSetFollowMethod?.Invoke(_buddyMonsterAi, new object[] { null });
             Vector3 bPos = _buddyGo.transform.position;
-            string primaryKey = isWood ? "Wood" : "Stone";
             int targetAmt = Math.Max(5, _activeTask.Amount);
             int have = isWood
                 ? GetBagCount("Wood") + GetBagCount("FineWood") + GetBagCount("CoreWood")
@@ -541,12 +577,12 @@ namespace POKValheimQoL
             // 1. Pick up nearby dropped wood/stone first!
             if (_currentTargetDrop == null && Time.unscaledTime > _nextScanAt)
             {
-                _currentTargetDrop = FindNearestResourceDrop(bPos, 14f, isWood);
+                _currentTargetDrop = FindNearestResourceDrop(bPos, 16f, isWood);
             }
             if (_currentTargetDrop != null && _currentTargetDrop.gameObject)
             {
-                float d = Vector3.Distance(bPos, _currentTargetDrop.transform.position);
-                if (d > 2.0f)
+                float d = FlatDist(bPos, _currentTargetDrop.transform.position);
+                if (d > 2.2f)
                 {
                     MoveBuddyTo(dt, _currentTargetDrop.transform.position, 1.5f, true);
                 }
@@ -554,6 +590,10 @@ namespace POKValheimQoL
                 {
                     CollectDrop(_currentTargetDrop);
                     _currentTargetDrop = null;
+                    int nowHave = isWood
+                        ? GetBagCount("Wood") + GetBagCount("FineWood") + GetBagCount("CoreWood")
+                        : GetBagCount("Stone") + GetBagCount("CopperOre") + GetBagCount("TinOre");
+                    QoLPlugin.ShowHudMessagePublic($"[{GetName()}] Collected {(isWood ? "Wood" : "Stone")} ({nowHave}/{targetAmt})");
                 }
                 return;
             }
@@ -562,21 +602,23 @@ namespace POKValheimQoL
             if ((_currentTargetResource == null || !_currentTargetResource.gameObject) && Time.unscaledTime > _nextScanAt)
             {
                 _nextScanAt = Time.unscaledTime + 0.6f;
-                _currentTargetResource = isWood ? FindNearestTree(bPos, 48f) : FindNearestRock(bPos, 48f);
+                _currentTargetResource = isWood ? FindNearestTree(bPos, 60f) : FindNearestRock(bPos, 60f);
                 if (_currentTargetResource == null)
                 {
-                    AdvanceTask($"Couldn't find any more {(isWood ? "trees" : "rocks")} nearby (gathered {have}).");
+                    AdvanceTask($"Couldn't find any {(isWood ? "trees" : "rocks")} within 60m (gathered {have}).");
                     return;
                 }
+                float td = FlatDist(bPos, _currentTargetResource.transform.position);
+                QoLPlugin.ShowHudMessagePublic($"[{GetName()}] Heading to {(isWood ? "tree" : "rock")} ({td:0}m away)...");
             }
 
             if (_currentTargetResource == null || !_currentTargetResource.gameObject) return;
 
             Vector3 rPos = _currentTargetResource.transform.position;
-            float dist = Vector3.Distance(bPos, rPos);
-            if (dist > 2.8f)
+            float dist = FlatDist(bPos, rPos);
+            if (dist > 3.2f)
             {
-                MoveBuddyTo(dt, rPos, 2.3f, true);
+                MoveBuddyTo(dt, rPos, 2.4f, true);
             }
             else
             {
@@ -588,7 +630,7 @@ namespace POKValheimQoL
 
                 if (Time.unscaledTime >= _nextSwingAt)
                 {
-                    _nextSwingAt = Time.unscaledTime + 1.35f;
+                    _nextSwingAt = Time.unscaledTime + 1.25f;
                     _humanoidStartAttackMethod?.Invoke(_buddyHumanoid, new object[] { null, false });
                     ApplyResourceHit(_currentTargetResource, isWood, rPos, look.normalized);
                     _axeDurability = Math.Max(0, _axeDurability - 2);
