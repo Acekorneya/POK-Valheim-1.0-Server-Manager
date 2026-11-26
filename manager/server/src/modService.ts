@@ -614,93 +614,119 @@ class ModService {
 
     // 4. Add bulletproof 1-Click Windows Auto-Installer (Install-POK-Mods.bat -> install.ps1)
     const installPs1 = `$ErrorActionPreference = 'Stop'
-Write-Host "============================================================" -ForegroundColor Yellow
-Write-Host "  POK-Valheim 1-Click Mod Installer" -ForegroundColor Yellow
-Write-Host "  Realm: ${server.name.replace(/"/g, "'")}" -ForegroundColor Cyan
-Write-Host "============================================================" -ForegroundColor Yellow
-Write-Host ""
-
-function Find-ValheimDir {
-  $steamRoots = @()
-
-  # 1. Read Steam install path from Windows Registry (HKCU + HKLM)
-  foreach ($regPath in @(
-    'HKCU:\\Software\\Valve\\Steam',
-    'HKLM:\\SOFTWARE\\WOW6432Node\\Valve\\Steam',
-    'HKLM:\\SOFTWARE\\Valve\\Steam'
-  )) {
-    try {
-      $props = Get-ItemProperty -Path $regPath -ErrorAction Stop
-      foreach ($propName in @('SteamPath', 'InstallPath')) {
-        $val = $props.$propName
-        if ($val -and (Test-Path $val)) {
-          $steamRoots += ($val -replace '/', '\\')
-        }
-      }
-    } catch {}
-  }
-
-  # 2. Parse Steam's libraryfolders.vdf (finds ANY custom Steam library on ANY drive!)
-  $allLibraries = @()
-  foreach ($root in ($steamRoots | Select-Object -Unique)) {
-    $allLibraries += $root
-    $vdf = Join-Path $root 'steamapps\\libraryfolders.vdf'
-    if (Test-Path $vdf) {
-      Get-Content $vdf -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($_ -match '"path"\\s+"([^"]+)"') {
-          $libPath = $matches[1] -replace '\\\\\\\\', '\\'
-          if (Test-Path $libPath) { $allLibraries += $libPath }
-        }
-      }
-    }
-  }
-
-  # 3. Also scan common Steam library locations across all local drives
-  foreach ($drv in (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\\\$' })) {
-    foreach ($sub in @('Program Files (x86)\\Steam', 'Program Files\\Steam', 'Steam', 'SteamLibrary', 'Games\\Steam', 'Games\\SteamLibrary')) {
-      $p = Join-Path $drv.Root $sub
-      if (Test-Path $p) { $allLibraries += $p }
-    }
-  }
-
-  foreach ($lib in ($allLibraries | Select-Object -Unique)) {
-    $cand = Join-Path $lib 'steamapps\\common\\Valheim'
-    if (Test-Path (Join-Path $cand 'valheim.exe')) {
-      return $cand
-    }
-  }
-  return $null
-}
-
-$valheimDir = Find-ValheimDir
-
-if (-not $valheimDir) {
-  Write-Host "Could not auto-detect your Valheim folder." -ForegroundColor Yellow
-  $valheimDir = Read-Host "Paste your Valheim folder path (containing valheim.exe)"
-  $valheimDir = $valheimDir.Trim('"').Trim()
-}
-
-if (-not $valheimDir -or -not (Test-Path (Join-Path $valheimDir 'valheim.exe'))) {
+try {
+  Write-Host "============================================================" -ForegroundColor Yellow
+  Write-Host "  POK-Valheim 1-Click Mod Installer" -ForegroundColor Yellow
+  Write-Host "  Realm: ${server.name.replace(/"/g, "'")}" -ForegroundColor Cyan
+  Write-Host "============================================================" -ForegroundColor Yellow
   Write-Host ""
-  Write-Host "[ERROR] valheim.exe not found in: $valheimDir" -ForegroundColor Red
-  Read-Host "Press Enter to exit"
-  exit 1
+
+  # Check if Valheim is currently running (locked DLLs would prevent install)
+  while (Get-Process -Name 'valheim' -ErrorAction SilentlyContinue) {
+    Write-Host "[WAIT] Valheim is currently running!" -ForegroundColor Yellow
+    Write-Host "Please close Valheim first, then press Enter to continue..." -ForegroundColor White
+    Read-Host | Out-Null
+  }
+
+  function Find-ValheimDir {
+    $steamRoots = @()
+
+    foreach ($regPath in @(
+      'HKCU:\\Software\\Valve\\Steam',
+      'HKLM:\\SOFTWARE\\WOW6432Node\\Valve\\Steam',
+      'HKLM:\\SOFTWARE\\Valve\\Steam'
+    )) {
+      try {
+        $props = Get-ItemProperty -Path $regPath -ErrorAction Stop
+        foreach ($propName in @('SteamPath', 'InstallPath')) {
+          $val = $props.$propName
+          if ($val -and (Test-Path $val)) {
+            $steamRoots += ($val -replace '/', '\\')
+          }
+        }
+      } catch {}
+    }
+
+    $allLibraries = @()
+    foreach ($root in ($steamRoots | Select-Object -Unique)) {
+      $allLibraries += $root
+      $vdf = Join-Path $root 'steamapps\\libraryfolders.vdf'
+      if (Test-Path $vdf) {
+        Get-Content $vdf -ErrorAction SilentlyContinue | ForEach-Object {
+          if ($_ -match '"path"\\s+"([^"]+)"') {
+            $libPath = $matches[1] -replace '\\\\\\\\', '\\'
+            if (Test-Path $libPath) { $allLibraries += $libPath }
+          }
+        }
+      }
+    }
+
+    foreach ($drv in (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Z]:\\\\$' })) {
+      foreach ($sub in @('Program Files (x86)\\Steam', 'Program Files\\Steam', 'Steam', 'SteamLibrary', 'Games\\Steam', 'Games\\SteamLibrary')) {
+        $p = Join-Path $drv.Root $sub
+        if (Test-Path $p) { $allLibraries += $p }
+      }
+    }
+
+    foreach ($lib in ($allLibraries | Select-Object -Unique)) {
+      $cand = Join-Path $lib 'steamapps\\common\\Valheim'
+      if (Test-Path (Join-Path $cand 'valheim.exe')) {
+        return $cand
+      }
+    }
+    return $null
+  }
+
+  $valheimDir = Find-ValheimDir
+
+  if (-not $valheimDir) {
+    Write-Host "Could not auto-detect your Valheim folder." -ForegroundColor Yellow
+    $valheimDir = Read-Host "Paste your Valheim folder path (containing valheim.exe)"
+    $valheimDir = $valheimDir.Trim('"').Trim()
+  }
+
+  if (-not $valheimDir -or -not (Test-Path (Join-Path $valheimDir 'valheim.exe'))) {
+    throw "valheim.exe was not found in: $valheimDir"
+  }
+
+  Write-Host "[OK] Found Valheim at: $valheimDir" -ForegroundColor Green
+  Write-Host "[..] Installing BepInEx, plugins, and configs..." -ForegroundColor Cyan
+
+  $payloadDir = Join-Path $PSScriptRoot 'payload'
+  if (-not (Test-Path $payloadDir)) {
+    throw "payload folder is missing! Make sure you extracted the entire .zip first before running Install-POK-Mods.bat."
+  }
+
+  Copy-Item -Path (Join-Path $payloadDir '*') -Destination $valheimDir -Recurse -Force
+
+  # Verify key files exist after copy
+  if (-not (Test-Path (Join-Path $valheimDir 'BepInEx\\core\\BepInEx.Preloader.dll'))) {
+    throw "Installation verification failed: BepInEx.Preloader.dll was not found after copying."
+  }
+
+  $installedPlugins = Get-ChildItem -Path (Join-Path $valheimDir 'BepInEx\\plugins') -Filter '*.dll' -Recurse -ErrorAction SilentlyContinue
+  Write-Host ""
+  Write-Host "============================================================" -ForegroundColor Green
+  Write-Host "  SUCCESS! Mods installed cleanly for '${server.name.replace(/'/g, '')}'!" -ForegroundColor Green
+  Write-Host "  Location: $valheimDir" -ForegroundColor Gray
+  Write-Host "  Plugins installed ($($installedPlugins.Count)):" -ForegroundColor White
+  foreach ($pl in $installedPlugins) {
+    Write-Host "    - $($pl.Name)" -ForegroundColor Cyan
+  }
+  Write-Host ""
+  Write-Host "  You can now launch Valheim from Steam normally and join!" -ForegroundColor White
+  Write-Host "  (Run Uninstall-POK-Mods.bat anytime to return to vanilla)" -ForegroundColor Gray
+  Write-Host "============================================================" -ForegroundColor Green
 }
-
-Write-Host "Found Valheim at: $valheimDir" -ForegroundColor Green
-Write-Host "Installing BepInEx and realm mods..." -ForegroundColor Cyan
-
-$payloadDir = Join-Path $PSScriptRoot 'payload'
-Copy-Item -Path (Join-Path $payloadDir '*') -Destination $valheimDir -Recurse -Force
-
+catch {
+  Write-Host ""
+  Write-Host "============================================================" -ForegroundColor Red
+  Write-Host "  [INSTALL FAILED]" -ForegroundColor Red
+  Write-Host "  $($_.Exception.Message)" -ForegroundColor Yellow
+  Write-Host "============================================================" -ForegroundColor Red
+}
 Write-Host ""
-Write-Host "============================================================" -ForegroundColor Green
-Write-Host "  SUCCESS! Mods installed for '${server.name.replace(/'/g, '')}'!" -ForegroundColor Green
-Write-Host "  Launch Valheim from Steam normally and join the server!" -ForegroundColor White
-Write-Host "  (Run Uninstall-POK-Mods.bat anytime to return to vanilla)" -ForegroundColor Gray
-Write-Host "============================================================" -ForegroundColor Green
-Write-Host ""
-Read-Host "Press Enter to close"
+Read-Host "Press Enter to close this window"
 `.replace(/\n/g, '\r\n');
 
     const uninstallPs1 = `$ErrorActionPreference = 'Stop'
