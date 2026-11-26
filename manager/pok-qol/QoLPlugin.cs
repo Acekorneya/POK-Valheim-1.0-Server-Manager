@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.2")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.3")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -77,6 +77,8 @@ namespace POKValheimQoL
         private static FieldInfo _gridPosYField;
         private static FieldInfo _sharedNameField;
         private static FieldInfo _sharedItemTypeField;
+        private static FieldInfo _sharedFoodField;
+        private static FieldInfo _sharedTeleportableField;
 
         private static MethodInfo _invGetAllItemsMethod;
         private static MethodInfo _invGetWidthMethod;
@@ -144,7 +146,7 @@ namespace POKValheimQoL
             CacheReflection();
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] v1.3.2 Loaded! Pure O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware Forge/Bench crafting, craftable POK Drop-Off Chest.");
+            Logger.LogInfo("[POK-QoL] v1.3.3 Loaded! Smart category Drop-Off Chest, O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware Forge/Bench crafting.");
         }
 
         private void OnDestroy()
@@ -197,6 +199,8 @@ namespace POKValheimQoL
             _gridPosYField = _itemDataGridPosField?.FieldType?.GetField("y");
             _sharedNameField = _sharedDataType?.GetField("m_name");
             _sharedItemTypeField = _sharedDataType?.GetField("m_itemType");
+            _sharedFoodField = _sharedDataType?.GetField("m_food");
+            _sharedTeleportableField = _sharedDataType?.GetField("m_teleportable");
 
             _invGetAllItemsMethod = _inventoryType?.GetMethod("GetAllItems", Type.EmptyTypes);
             _invGetWidthMethod = _inventoryType?.GetMethod("GetWidth", Type.EmptyTypes);
@@ -613,13 +617,88 @@ namespace POKValheimQoL
             return t != null ? Convert.ToInt32(t) : 0;
         }
 
-        private static bool InventoryHasItemType(object inventory, int itemType)
+        private static bool ContainsAny(string text, params string[] keywords)
+        {
+            for (int i = 0; i < keywords.Length; i++)
+                if (text.IndexOf(keywords[i], StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            return false;
+        }
+
+        // Smart logical storage categories so rocks/ores NEVER mix into food chests!
+        private static string GetSmartCategory(object item)
+        {
+            var shared = _itemDataSharedField?.GetValue(item);
+            string name = (_sharedNameField?.GetValue(shared) as string ?? "").ToLowerInvariant();
+            int itemType = GetItemTypeInt(item);
+            float food = _sharedFoodField?.GetValue(shared) is float f ? f : 0f;
+            bool teleportable = !(_sharedTeleportableField?.GetValue(shared) is bool tp) || tp;
+
+            // Valheim ItemType enum values:
+            // 1=Material, 2=Consumable, 3=OneHandedWeapon, 4=Bow, 5=Shield, 6=Helmet, 7=Chest,
+            // 9=Ammo, 11=Legs, 12=Hands, 13=Trophy, 14=TwoHandedWeapon, 15=Torch, 16=Misc,
+            // 17=Shoulder, 18=Utility, 19=Tool, 20=Attach_Atgeir, 21=Fish, 22=TwoHandedWeaponLeft, 23=AmmoNonEquipable
+            if (itemType == 2 || itemType == 21 || food > 0f)
+                return "Food";
+            if (itemType == 13)
+                return "Trophy";
+            if (itemType == 9 || itemType == 23)
+                return "Ammo";
+            if (itemType == 6 || itemType == 7 || itemType == 11 || itemType == 12 || itemType == 17 || itemType == 18)
+                return "Armor";
+            if (itemType == 3 || itemType == 4 || itemType == 5 || itemType == 14 || itemType == 15 || itemType == 19 || itemType == 20 || itemType == 22)
+                return "WeaponsAndTools";
+
+            // Sub-classify Material (1) and Misc (16) so Food, Ores, Building mats, Hides, and Valuables stay cleanly separated
+            if (ContainsAny(name, "meat", "fish", "berry", "berries", "mushroom", "carrot", "turnip", "onion",
+                "barley", "flax", "flour", "honey", "thistle", "dandelion", "egg", "jelly", "entrails", "bloodbag",
+                "bloodclot", "sausage", "stew", "soup", "pie", "bread", "jam", "jerky", "mead", "wine", "seed",
+                "acorn", "beech", "birch", "fircone", "pinecone", "jotunpuffs", "magecap", "fiddlehead", "vine",
+                "necktail", "sap", "spice", "yeast", "milk"))
+                return "Food";
+
+            if (ContainsAny(name, "leather", "hide", "pelt", "scale", "bone", "feather", "fang", "claw", "troll",
+                "root", "guck", "ooze", "needle", "chitin", "carapace", "mandible", "bilebag", "tissue",
+                "linen", "thread", "jute", "wool", "hair", "fur", "horn", "eye", "gland", "bladder"))
+                return "HidesAndDrops";
+
+            if (!teleportable || ContainsAny(name, "ore", "ironscrap", "scrapiron", "copper", "tin", "bronze", "iron",
+                "silver", "blackmetal", "flametal", "ingot", "coal", "charcoal", "eitr", "blackcore", "surtlingcore",
+                "moltencore", "chain", "nails"))
+                return "OreAndMetal";
+
+            if (ContainsAny(name, "wood", "stone", "flint", "obsidian", "marble", "grausten", "tar", "crystal",
+                "resin", "ashwood", "yggdrasil"))
+                return "StoneAndWood";
+
+            if (ContainsAny(name, "coins", "amber", "ruby", "pearl", "gem", "necklace", "gold"))
+                return "Valuables";
+
+            return "OtherMaterial";
+        }
+
+        private static int GetInventoryItemCount(object inventory)
+        {
+            var items = _invGetAllItemsMethod?.Invoke(inventory, null) as IEnumerable;
+            if (items == null) return 0;
+            int count = 0;
+            foreach (var _ in items) count++;
+            return count;
+        }
+
+        // Returns true ONLY if the chest has items and ALL items in it match the target smart category
+        private static bool InventoryMatchesCategoryStrictly(object inventory, string category)
         {
             var items = _invGetAllItemsMethod?.Invoke(inventory, null) as IEnumerable;
             if (items == null) return false;
+            bool hasAny = false;
             foreach (var item in items)
-                if (GetItemTypeInt(item) == itemType) return true;
-            return false;
+            {
+                hasAny = true;
+                if (GetSmartCategory(item) != category)
+                    return false;
+            }
+            return hasAny;
         }
 
         private static bool InventoryHasEmptySlot(object inventory)
@@ -731,30 +810,33 @@ namespace POKValheimQoL
 
                     if (!placed && DropOffUseEmptySlots.Value)
                     {
-                        int itemType = GetItemTypeInt(item);
+                        string category = GetSmartCategory(item);
 
-                        // Pass 2: Chest with empty slots that holds items of the SAME category (e.g. Food, Material, Trophy)
+                        // Pass 2: Chest with empty slots whose items ALL belong to the SAME smart category
+                        // (e.g. Food stays with Food, Ore/Metal with Ore/Metal, Stone/Wood with Stone/Wood)
                         foreach (var target in targets)
                         {
                             var dstInv = GetContainerInventory(target);
                             if (dstInv == null || !InventoryHasEmptySlot(dstInv)) continue;
-                            if (!InventoryHasItemType(dstInv, itemType)) continue;
+                            if (!InventoryMatchesCategoryStrictly(dstInv, category)) continue;
                             if (TryMoveTo(item, target)) { placed = true; break; }
                         }
 
-                        // Pass 3: Any nearest chest with an empty slot
+                        // Pass 3: ONLY a COMPLETELY EMPTY chest (starts a new dedicated chest for this category;
+                        // NEVER dumps unrelated items like rocks into a Food chest!)
                         if (!placed)
                         {
                             foreach (var target in targets)
                             {
                                 var dstInv = GetContainerInventory(target);
-                                if (dstInv == null || !InventoryHasEmptySlot(dstInv)) continue;
+                                if (dstInv == null || GetInventoryItemCount(dstInv) != 0) continue;
                                 if (TryMoveTo(item, target)) { placed = true; break; }
                             }
                         }
                     }
                 }
 
+                int remaining = srcItems.Count - movedStacks;
                 if (movedStacks > 0)
                 {
                     foreach (var chest in modifiedChests)
@@ -764,7 +846,12 @@ namespace POKValheimQoL
                     }
                     SaveContainer(container);
                     _cacheExpiresAt = -1f;
-                    ShowHudMessage($"[POK-QoL] Sorted & organized {movedStacks} stack(s) into {modifiedChests.Count} chest(s)!");
+                    string keptNote = remaining > 0 ? $" ({remaining} kept in Drop-Off: no matching/empty chest)" : "";
+                    ShowHudMessage($"[POK-QoL] Sorted {movedStacks} stack(s) into {modifiedChests.Count} chest(s){keptNote}");
+                }
+                else if (remaining > 0)
+                {
+                    ShowHudMessage($"[POK-QoL] Kept {remaining} stack(s) in Drop-Off (no matching category or empty chest nearby).");
                 }
             }
             catch (Exception ex)
