@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.4")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.5")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -57,6 +57,7 @@ namespace POKValheimQoL
 
         private static FieldInfo _containerNviewField;
         private static MethodInfo _nviewIsValidMethod;
+        private static MethodInfo _nviewClaimOwnershipMethod;
         private static MethodInfo _containerGetInvMethod;
         private static MethodInfo _containerIsInUseMethod;
         private static MethodInfo _containerSaveMethod;
@@ -151,7 +152,7 @@ namespace POKValheimQoL
             CacheReflection();
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] v1.3.4 Loaded! Sign-labeled & smart category Drop-Off Chest, O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware Forge/Bench crafting.");
+            Logger.LogInfo("[POK-QoL] v1.3.5 Loaded! Multiplayer ZDO-safe Drop-Off & Sign sorting, O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware crafting.");
         }
 
         private void OnDestroy()
@@ -182,6 +183,7 @@ namespace POKValheimQoL
             _containerNviewField = _containerType?.GetField("m_nview", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
             var nviewType = AccessTools.TypeByName("ZNetView");
             _nviewIsValidMethod = nviewType?.GetMethod("IsValid", Type.EmptyTypes);
+            _nviewClaimOwnershipMethod = nviewType?.GetMethod("ClaimOwnership", Type.EmptyTypes);
             _containerGetInvMethod = _containerType?.GetMethod("GetInventory");
             _containerIsInUseMethod = _containerType?.GetMethod("IsInUse");
             _containerSaveMethod = _containerType?.GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
@@ -536,9 +538,22 @@ namespace POKValheimQoL
             return false;
         }
 
+        // Multiplayer-safe container save: claims ZDO ownership first so dedicated server & all peers receive the exact state
         private static void SaveContainer(Component container)
         {
-            try { _containerSaveMethod?.Invoke(container, null); } catch { }
+            if (container == null) return;
+            try
+            {
+                var nview = _containerNviewField?.GetValue(container);
+                if (nview != null)
+                {
+                    if (_nviewIsValidMethod != null && _nviewIsValidMethod.Invoke(nview, null) is bool valid && !valid)
+                        return;
+                    _nviewClaimOwnershipMethod?.Invoke(nview, null);
+                }
+                _containerSaveMethod?.Invoke(container, null);
+            }
+            catch { }
         }
 
         private static void AddInventoryItemsToCounts(object inv)
@@ -981,18 +996,31 @@ namespace POKValheimQoL
                 var chestLabels = BuildChestSignLabels(targets);
 
                 int movedStacks = 0;
+                int partialMoves = 0;
                 var modifiedChests = new HashSet<Component>();
 
                 bool TryMoveTo(object item, Component target)
                 {
                     var dstInv = GetContainerInventory(target);
                     if (dstInv == null) return false;
-                    if (_invAddItemDataMethod.Invoke(dstInv, new[] { item }) is bool ok && ok)
+                    int stackBefore = GetItemStack(item);
+                    if (stackBefore <= 0) return true;
+
+                    bool ok = _invAddItemDataMethod.Invoke(dstInv, new[] { item }) is bool b && b;
+                    if (ok)
                     {
                         _invRemoveItemDataMethod.Invoke(srcInv, new[] { item });
                         modifiedChests.Add(target);
                         movedStacks++;
                         return true;
+                    }
+
+                    // If AddItem merged a partial stack into an existing stack before running out of slots,
+                    // mark destination as modified so BOTH chests save cleanly (prevents any partial-stack loss!)
+                    if (GetItemStack(item) < stackBefore)
+                    {
+                        modifiedChests.Add(target);
+                        partialMoves++;
                     }
                     return false;
                 }
@@ -1053,7 +1081,7 @@ namespace POKValheimQoL
                 }
 
                 int remaining = srcItems.Count - movedStacks;
-                if (movedStacks > 0)
+                if (movedStacks > 0 || partialMoves > 0)
                 {
                     foreach (var chest in modifiedChests)
                     {
@@ -1063,7 +1091,8 @@ namespace POKValheimQoL
                     SaveContainer(container);
                     _cacheExpiresAt = -1f;
                     string keptNote = remaining > 0 ? $" ({remaining} kept in Drop-Off: no matching/empty chest)" : "";
-                    ShowHudMessage($"[POK-QoL] Sorted {movedStacks} stack(s) into {modifiedChests.Count} chest(s){keptNote}");
+                    int totalMoved = movedStacks + partialMoves;
+                    ShowHudMessage($"[POK-QoL] Sorted {totalMoved} stack(s) into {modifiedChests.Count} chest(s){keptNote}");
                 }
                 else if (remaining > 0)
                 {
@@ -1117,12 +1146,20 @@ namespace POKValheimQoL
                     var dstInv = GetContainerInventory(target);
                     if (dstInv == null || !InventoryHasItemNamed(dstInv, name)) continue;
 
+                    int stackBefore = GetItemStack(item);
+                    if (stackBefore <= 0) break;
+
                     if (_invAddItemDataMethod.Invoke(dstInv, new[] { item }) is bool ok && ok)
                     {
                         _invRemoveItemDataMethod.Invoke(playerInv, new[] { item });
                         SaveContainer(target);
                         moved++;
                         break;
+                    }
+                    if (GetItemStack(item) < stackBefore)
+                    {
+                        SaveContainer(target);
+                        moved++;
                     }
                 }
             }
