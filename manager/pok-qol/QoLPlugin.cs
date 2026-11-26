@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.3")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.4")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -84,6 +84,10 @@ namespace POKValheimQoL
         private static FieldInfo _stationRangeBuildField;
         private static FieldInfo _allStationsField;
         private static MethodInfo _haveBuildStationMethod;
+
+        private static Type _tmpTextType;
+        private static PropertyInfo _tmpTextProp;
+        private static PropertyInfo _tmpColorProp;
 
         // 0.5s snapshot caches (combined player + nearby chest counts, nearby stations, and per-Piece result cache)
         private static float _cacheExpiresAt = -1f;
@@ -194,6 +198,10 @@ namespace POKValheimQoL
             _stationRangeBuildField = _craftingStationType?.GetField("m_rangeBuild");
             _allStationsField = _craftingStationType?.GetField("m_allStations", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
             _haveBuildStationMethod = _craftingStationType?.GetMethod("HaveBuildStationInRange", BindingFlags.Public | BindingFlags.Static);
+
+            _tmpTextType = AccessTools.TypeByName("TMPro.TMP_Text");
+            _tmpTextProp = _tmpTextType?.GetProperty("text", BindingFlags.Public | BindingFlags.Instance);
+            _tmpColorProp = _tmpTextType?.GetProperty("color", BindingFlags.Public | BindingFlags.Instance);
         }
 
         private void Update()
@@ -247,6 +255,9 @@ namespace POKValheimQoL
 
             SafePatch("Player:ConsumeResources", AccessTools.Method("Player:ConsumeResources"),
                 prefix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_ConsumeResources_Prefix)));
+
+            SafePatch("InventoryGui:SetupRequirement", AccessTools.Method("InventoryGui:SetupRequirement"),
+                postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(InventoryGui_SetupRequirement_Postfix)));
         }
 
         private static void Container_Awake_Postfix(object __instance)
@@ -853,6 +864,54 @@ namespace POKValheimQoL
             {
                 _instance?.Logger.LogWarning($"[POK-QoL] ConsumeResources warning: {ex.Message}");
             }
+        }
+
+        // Updates Crafting & Hammer UI requirement text: stops red flashing when chests have enough
+        // and displays "needed/total" (e.g. "1/240") using our 0.5s O(1) cache!
+        private static void InventoryGui_SetupRequirement_Postfix(
+            Transform __0,
+            object __1,
+            object __2,
+            bool __3,
+            int __4,
+            object[] __args
+        )
+        {
+            if (!EnableCraftFromChests.Value || __0 == null || __1 == null || __2 == null || _tmpTextType == null)
+                return;
+            try
+            {
+                var player = __2 as Component;
+                if (player == null) return;
+
+                var resItem = _reqResItemField?.GetValue(__1);
+                if (resItem == null) return;
+                var itemData = _itemDropDataField?.GetValue(resItem);
+                string sharedName = GetItemSharedName(itemData);
+                if (string.IsNullOrEmpty(sharedName)) return;
+
+                int quality = __4;
+                int mult = (__args != null && __args.Length > 5 && __args[5] is int m) ? Math.Max(1, m) : 1;
+                int needed = (_reqGetAmountMethod != null
+                    ? (int)_reqGetAmountMethod.Invoke(__1, quality == 1 ? _qualityOneArgs : new object[] { quality })
+                    : 0) * mult;
+                if (needed <= 0) return;
+
+                RefreshSnapshotIfNeeded(player);
+                int total = _combinedItemCounts.TryGetValue(sharedName, out int c) ? c : 0;
+
+                var amountTf = __0.Find("res_amount");
+                if (amountTf == null) return;
+                var tmpComp = amountTf.GetComponent(_tmpTextType);
+                if (tmpComp == null) return;
+
+                _tmpTextProp?.SetValue(tmpComp, $"{needed}/{total}");
+                if (total >= needed)
+                {
+                    _tmpColorProp?.SetValue(tmpComp, Color.white);
+                }
+            }
+            catch { }
         }
     }
 }
