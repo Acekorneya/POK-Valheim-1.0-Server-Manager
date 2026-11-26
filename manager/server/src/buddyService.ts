@@ -116,15 +116,16 @@ class BuddyService {
 
   updateConfig(patch: Partial<BuddyConfig>): ReturnType<BuddyService['getPublicConfig']> {
     if (!this.filePath) this.init();
-    const next: BuddyConfig = {
-      ...this.cfg,
-      ...patch,
-    };
-    // Keep existing API key if caller sends undefined (or clear it if explicitly empty string & clearApiKey)
-    if (patch.apiKey === undefined) {
-      next.apiKey = this.cfg.apiKey;
+    const cleanPatch: Partial<BuddyConfig> = {};
+    for (const [k, v] of Object.entries(patch)) {
+      if (v !== undefined) {
+        (cleanPatch as Record<string, unknown>)[k] = v;
+      }
     }
-    this.cfg = next;
+    this.cfg = {
+      ...this.cfg,
+      ...cleanPatch,
+    };
     this.save();
     return this.getPublicConfig();
   }
@@ -269,7 +270,7 @@ class BuddyService {
           model: cfg.model,
           messages,
           temperature: 0.3,
-          max_tokens: 280,
+          max_tokens: 1024,
         }),
       });
       clearTimeout(timeout);
