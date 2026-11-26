@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.5")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.4.0")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -29,6 +29,8 @@ namespace POKValheimQoL
         public static ConfigEntry<KeyCode> QuickStackKey;
         public static ConfigEntry<bool> EnableCraftFromChests;
         public static ConfigEntry<float> CraftRadius;
+        public static ConfigEntry<bool> EnableResponsiveHitOwnership;
+        public static ConfigEntry<float> OwnershipClaimCooldownSeconds;
 
         private Harmony _harmony;
         private static QoLPlugin _instance;
@@ -57,6 +59,7 @@ namespace POKValheimQoL
 
         private static FieldInfo _containerNviewField;
         private static MethodInfo _nviewIsValidMethod;
+        private static MethodInfo _nviewIsOwnerMethod;
         private static MethodInfo _nviewClaimOwnershipMethod;
         private static MethodInfo _containerGetInvMethod;
         private static MethodInfo _containerIsInUseMethod;
@@ -108,6 +111,15 @@ namespace POKValheimQoL
         private static MethodInfo _locLocalizeMethod;
         private static readonly Regex _richTextRegex = new Regex("<[^>]+>", RegexOptions.Compiled);
 
+        // Cached reflection for Section 4: Responsive Hit & Combat Ownership
+        private static MethodInfo _hitGetAttackerMethod;
+        private static MethodInfo _charIsPlayerMethod;
+        private static MethodInfo _charIsTamedMethod;
+        private static Type _monsterAiType;
+        private static FieldInfo _monsterTargetField;
+        private static readonly Dictionary<Type, FieldInfo> _nviewFieldByType = new Dictionary<Type, FieldInfo>();
+        private static readonly Dictionary<int, float> _lastClaimTimeById = new Dictionary<int, float>();
+
         // 0.5s snapshot caches (combined player + nearby chest counts, nearby stations, and per-Piece result cache)
         private static float _cacheExpiresAt = -1f;
         private static Vector3 _cacheOrigin;
@@ -149,10 +161,15 @@ namespace POKValheimQoL
             CraftRadius = Config.Bind("3. Craft & Build From Chests", "RadiusMeters", 15f,
                 "Radius (in meters) to pull crafting and building materials from nearby chests.");
 
+            EnableResponsiveHitOwnership = Config.Bind("4. Responsive Hit & Combat", "Enabled", true,
+                "Reduces hit lag when chopping trees, mining rocks, or fighting enemies in zones owned by another player (with anti-ping-pong protection).");
+            OwnershipClaimCooldownSeconds = Config.Bind("4. Responsive Hit & Combat", "ClaimCooldownSeconds", 5.0f,
+                "Minimum seconds before re-claiming the same tree/rock/enemy so multiple players never ping-pong ownership.");
+
             CacheReflection();
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] v1.3.5 Loaded! Multiplayer ZDO-safe Drop-Off & Sign sorting, O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware crafting.");
+            Logger.LogInfo("[POK-QoL] v1.4.0 Loaded! Responsive Hit Ownership, ZDO-safe Drop-Off & Sign sorting, O(1) Hammer UI, Valheim 1.0 Upgrader-aware crafting.");
         }
 
         private void OnDestroy()
@@ -183,6 +200,7 @@ namespace POKValheimQoL
             _containerNviewField = _containerType?.GetField("m_nview", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
             var nviewType = AccessTools.TypeByName("ZNetView");
             _nviewIsValidMethod = nviewType?.GetMethod("IsValid", Type.EmptyTypes);
+            _nviewIsOwnerMethod = nviewType?.GetMethod("IsOwner", Type.EmptyTypes);
             _nviewClaimOwnershipMethod = nviewType?.GetMethod("ClaimOwnership", Type.EmptyTypes);
             _containerGetInvMethod = _containerType?.GetMethod("GetInventory");
             _containerIsInUseMethod = _containerType?.GetMethod("IsInUse");
@@ -241,6 +259,14 @@ namespace POKValheimQoL
             var locType = AccessTools.TypeByName("Localization");
             _locInstanceProp = locType?.GetProperty("instance", BindingFlags.Public | BindingFlags.Static);
             _locLocalizeMethod = locType?.GetMethod("Localize", new[] { typeof(string) });
+
+            var hitDataType = AccessTools.TypeByName("HitData");
+            _hitGetAttackerMethod = hitDataType?.GetMethod("GetAttacker", Type.EmptyTypes);
+            var charType = AccessTools.TypeByName("Character");
+            _charIsPlayerMethod = charType?.GetMethod("IsPlayer", Type.EmptyTypes);
+            _charIsTamedMethod = charType?.GetMethod("IsTamed", Type.EmptyTypes);
+            _monsterAiType = AccessTools.TypeByName("MonsterAI");
+            _monsterTargetField = _monsterAiType?.GetField("m_targetCreature", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
         }
 
         private void Update()
@@ -297,6 +323,15 @@ namespace POKValheimQoL
 
             SafePatch("InventoryGui:SetupRequirement", AccessTools.Method("InventoryGui:SetupRequirement"),
                 postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(InventoryGui_SetupRequirement_Postfix)));
+
+            // Section 4: Responsive Hit & Combat Ownership (trees, logs, rocks, ore veins, enemies)
+            var damagePrefix = new HarmonyMethod(typeof(QoLPlugin), nameof(Resource_Damage_Prefix));
+            SafePatch("TreeBase:Damage", AccessTools.Method("TreeBase:Damage"), prefix: damagePrefix);
+            SafePatch("TreeLog:Damage", AccessTools.Method("TreeLog:Damage"), prefix: damagePrefix);
+            SafePatch("Destructible:Damage", AccessTools.Method("Destructible:Damage"), prefix: damagePrefix);
+            SafePatch("MineRock5:Damage", AccessTools.Method("MineRock5:Damage"), prefix: damagePrefix);
+            SafePatch("Character:Damage", AccessTools.Method("Character:Damage"),
+                prefix: new HarmonyMethod(typeof(QoLPlugin), nameof(Character_Damage_Prefix)));
         }
 
         private static void Container_Awake_Postfix(object __instance)
@@ -1429,6 +1464,89 @@ namespace POKValheimQoL
                 }
             }
             catch { }
+        }
+
+        // =========================================================================
+        // 4. RESPONSIVE HIT & COMBAT OWNERSHIP (Anti-Ping-Pong, Valheim 1.0 Safe)
+        // =========================================================================
+
+        private static void TryClaimOwnershipForLocalHit(object targetObj, object hitData, bool isCharacter)
+        {
+            if (!EnableResponsiveHitOwnership.Value || targetObj == null || hitData == null) return;
+            if (_hitGetAttackerMethod == null || _nviewIsValidMethod == null || _nviewIsOwnerMethod == null || _nviewClaimOwnershipMethod == null)
+                return;
+
+            try
+            {
+                var localPlayer = GetLocalPlayer();
+                if (localPlayer == null) return;
+
+                // Only act when the LOCAL player is the one landing the hit
+                var attacker = _hitGetAttackerMethod.Invoke(hitData, null) as Component;
+                if (attacker == null || attacker != localPlayer) return;
+
+                var targetComp = targetObj as Component;
+                if (targetComp == null || !targetComp.gameObject) return;
+
+                if (isCharacter)
+                {
+                    // NEVER claim ownership of players or tamed animals
+                    if (_charIsPlayerMethod?.Invoke(targetObj, null) is bool isP && isP) return;
+                    if (_charIsTamedMethod?.Invoke(targetObj, null) is bool isT && isT) return;
+
+                    // Anti-ping-pong: if this enemy is actively targeting ANOTHER player, don't steal ownership mid-fight
+                    if (_monsterAiType != null && _monsterTargetField != null)
+                    {
+                        var ai = targetComp.GetComponent(_monsterAiType);
+                        if (ai != null)
+                        {
+                            var currentTarget = _monsterTargetField.GetValue(ai) as Component;
+                            if (currentTarget != null && currentTarget != localPlayer &&
+                                _charIsPlayerMethod?.Invoke(currentTarget, null) is bool targetIsPlayer && targetIsPlayer)
+                            {
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                // Cached m_nview FieldInfo lookup per Type (O(1))
+                var t = targetObj.GetType();
+                if (!_nviewFieldByType.TryGetValue(t, out var nviewField))
+                {
+                    nviewField = t.GetField("m_nview", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+                    _nviewFieldByType[t] = nviewField;
+                }
+                var nview = nviewField?.GetValue(targetObj);
+                if (nview == null) return;
+
+                if (!(_nviewIsValidMethod.Invoke(nview, null) is bool valid && valid)) return;
+                if (_nviewIsOwnerMethod.Invoke(nview, null) is bool owner && owner) return;
+
+                // Per-object cooldown prevents ownership ping-pong if two players hit the same tree/enemy
+                int id = targetComp.GetInstanceID();
+                float now = Time.unscaledTime;
+                float cooldown = Math.Max(1.0f, OwnershipClaimCooldownSeconds.Value);
+                if (_lastClaimTimeById.TryGetValue(id, out float lastClaim) && (now - lastClaim) < cooldown)
+                    return;
+
+                if (_lastClaimTimeById.Count > 512)
+                    _lastClaimTimeById.Clear();
+
+                _lastClaimTimeById[id] = now;
+                _nviewClaimOwnershipMethod.Invoke(nview, null);
+            }
+            catch { }
+        }
+
+        private static void Resource_Damage_Prefix(object __instance, object __0)
+        {
+            TryClaimOwnershipForLocalHit(__instance, __0, isCharacter: false);
+        }
+
+        private static void Character_Damage_Prefix(object __instance, object __0)
+        {
+            TryClaimOwnershipForLocalHit(__instance, __0, isCharacter: true);
         }
     }
 }
