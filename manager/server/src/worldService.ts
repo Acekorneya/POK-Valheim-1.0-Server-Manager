@@ -26,6 +26,67 @@ function getTargetWorldsDir(location: string): string {
   return dir;
 }
 
+function read7BitString(buf: Buffer, offset: number): { value: string; nextOffset: number } | null {
+  let length = 0;
+  let shift = 0;
+  let pos = offset;
+  while (pos < buf.length) {
+    const b = buf[pos++];
+    length |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7;
+    if (shift > 28) return null;
+  }
+  if (length < 0 || pos + length > buf.length) return null;
+  return {
+    value: buf.subarray(pos, pos + length).toString('utf-8'),
+    nextOffset: pos + length,
+  };
+}
+
+function parseSeedFromFwlFile(filePath: string): string | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const data = fs.readFileSync(filePath);
+    if (data.length < 16) return null;
+    // Valheim FWL/FWL2 header: int32 byteLen, int32 version, string worldName, string seedName
+    const nameRes = read7BitString(data, 8);
+    if (!nameRes) return null;
+    const seedRes = read7BitString(data, nameRes.nextOffset);
+    if (!seedRes) return null;
+    const seed = seedRes.value.trim();
+    if (!seed || seed.length > 64 || /[\x00-\x1f]/.test(seed)) return null;
+    return seed;
+  } catch {
+    return null;
+  }
+}
+
+function extractWorldSeed(dir: string, worldName: string, isFolder: boolean): string | null {
+  if (isFolder) {
+    const folderPath = path.join(dir, worldName);
+    if (!fs.existsSync(folderPath)) return null;
+    try {
+      const fwlFiles = fs
+        .readdirSync(folderPath)
+        .filter((f) => f.endsWith('.fwl2') || f.endsWith('.fwl'))
+        .map((f) => ({
+          full: path.join(folderPath, f),
+          mtimeMs: fs.statSync(path.join(folderPath, f)).mtimeMs,
+        }))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const f of fwlFiles) {
+        const seed = parseSeedFromFwlFile(f.full);
+        if (seed) return seed;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  return parseSeedFromFwlFile(path.join(dir, `${worldName}.fwl`));
+}
+
 function getDirStatsRecursive(dirPath: string): {
   totalSize: number;
   latestMtimeMs: number;
@@ -121,6 +182,7 @@ function scanWorldsInDir(
       hasDb: info.hasDb,
       hasFwl: info.hasFwl,
       isFolder: info.isFolder,
+      seed: extractWorldSeed(dir, name, info.isFolder),
       totalSizeBytes: info.size,
       lastModified: new Date(info.mtimeMs).toISOString(),
       isActiveOnServer: activeWorldName ? activeWorldName === name : false,
@@ -129,6 +191,13 @@ function scanWorldsInDir(
 }
 
 export const worldService = {
+  getWorldSeed(serverId: string, worldName: string): string | null {
+    const dir = getServerWorldsDir(serverId);
+    const folderPath = path.join(dir, worldName);
+    const isFolder = fs.existsSync(folderPath) && fs.statSync(folderPath).isDirectory();
+    return extractWorldSeed(dir, worldName, isFolder);
+  },
+
   listAllWorlds(): WorldSaveInfo[] {
     const results: WorldSaveInfo[] = [];
 

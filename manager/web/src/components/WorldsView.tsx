@@ -174,6 +174,7 @@ export function WorldsView({ worlds, servers, onRefresh, onNotify }: WorldsViewP
               <thead className="bg-[#0b0f18] text-slate-400 uppercase tracking-wider text-[11px]">
                 <tr>
                   <th className="px-5 py-3">World Name</th>
+                  <th className="px-5 py-3">Seed</th>
                   <th className="px-5 py-3">Location</th>
                   <th className="px-5 py-3">Files</th>
                   <th className="px-5 py-3">Size</th>
@@ -197,6 +198,23 @@ export function WorldsView({ worlds, servers, onRefresh, onNotify }: WorldsViewP
                           </span>
                         )}
                       </div>
+                    </td>
+                    <td className="px-5 py-3.5 font-mono-code">
+                      {w.seed ? (
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(w.seed || '');
+                            onNotify(`Copied seed "${w.seed}"`);
+                          }}
+                          className="inline-flex items-center gap-1.5 text-emerald-300 hover:text-emerald-200 cursor-pointer"
+                          title="Click to copy seed"
+                        >
+                          <span>{w.seed}</span>
+                          <Copy className="w-3 h-3 text-slate-500" />
+                        </button>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
                     </td>
                     <td className="px-5 py-3.5 text-slate-300">
                       <span

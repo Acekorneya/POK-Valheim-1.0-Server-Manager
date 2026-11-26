@@ -37,10 +37,11 @@ serversRouter.get('/', async (_req, res) => {
   try {
     const servers = store.getServers();
     const withStatus: ServerWithStatus[] = await Promise.all(
-      servers.map(async (srv) => ({
-        ...srv,
-        runtime: await dockerService.getServerRuntimeStatus(srv.id),
-      }))
+      servers.map(async (srv) => {
+        const runtime = await dockerService.getServerRuntimeStatus(srv.id);
+        runtime.worldSeed = worldService.getWorldSeed(srv.id, srv.worldName);
+        return { ...srv, runtime };
+      })
     );
     res.json({
       dockerAvailable: dockerService.isAvailable(),

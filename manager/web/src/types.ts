@@ -44,6 +44,7 @@ export interface ServerRuntimeStatus {
   playersOnline: number;
   onlinePlayerNames: string[];
   worldDay: number | null;
+  worldSeed?: string | null;
   lastSavedAt: string | null;
   uptimeSeconds: number | null;
   cpuPercent: number;
@@ -63,6 +64,7 @@ export interface WorldSaveInfo {
   hasDb: boolean;
   hasFwl: boolean;
   isFolder?: boolean;
+  seed?: string | null;
   totalSizeBytes: number;
   lastModified: string;
   isActiveOnServer?: boolean;

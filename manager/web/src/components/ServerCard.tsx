@@ -132,6 +132,24 @@ export function ServerCard({
             </span>
           </div>
 
+          {server.runtime.worldSeed && (
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-400">Seed</span>
+              <button
+                onClick={() => copyText('seed', server.runtime.worldSeed || '')}
+                className="flex items-center gap-1.5 font-mono-code text-emerald-300 hover:text-emerald-200 transition cursor-pointer"
+                title="Copy world seed"
+              >
+                <span>{server.runtime.worldSeed}</span>
+                {copiedField === 'seed' ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5 text-slate-500" />
+                )}
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center justify-between text-xs">
             <span className="text-slate-400">Connect</span>
             <button
