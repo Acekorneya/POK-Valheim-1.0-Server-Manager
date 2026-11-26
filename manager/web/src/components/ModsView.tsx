@@ -15,6 +15,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Info,
+  PackageCheck,
+  Share2,
 } from 'lucide-react';
 import { api } from '../api';
 import type { ServerModsState, ServerWithStatus, ThunderstoreModSummary } from '../types';
@@ -202,9 +204,33 @@ export function ModsView({ servers, onNotify }: ModsViewProps) {
     }
   };
 
+  const handleInstallPokQoL = async () => {
+    if (!selectedServerId) return;
+    setInstallingId('POK-POKValheimQoL');
+    try {
+      const updated = await api.installPokQoL(selectedServerId);
+      setServerMods(updated);
+      onNotify(
+        'Installed POK-Valheim QoL Pack! Download & share the 1-Click Player Installer so friends get it too.'
+      );
+    } catch (err) {
+      onNotify((err as Error).message, true);
+    } finally {
+      setInstallingId(null);
+    }
+  };
+
+  const handleCopyShareLink = () => {
+    if (!selectedServerId) return;
+    const url = `${window.location.origin}${api.getClientModpackUrl(selectedServerId)}`;
+    navigator.clipboard.writeText(url);
+    onNotify('Copied 1-Click Player Modpack link! Paste it in Discord for your friends.');
+  };
+
   const installedMap = new Map(
     (serverMods?.mods || []).map((m) => [m.fullName.toLowerCase(), m])
   );
+  const pokQolInstalled = installedMap.has('pok-pokvalheimqol');
   const totalPages = Math.max(1, Math.ceil(catalogTotal / 18));
 
   return (
@@ -295,6 +321,76 @@ export function ModsView({ servers, onNotify }: ModsViewProps) {
           </span>
         </div>
       </div>
+
+      {/* POK-Valheim Built-In QoL & 1-Click Player Modpack Sharing */}
+      {selectedServerId && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="rounded-2xl bg-gradient-to-br from-amber-500/10 via-[#111622] to-[#111622] border border-amber-500/30 p-5 flex flex-col justify-between gap-3">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-amber-200 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-amber-400" />
+                  POK-Valheim Built-In QoL Mod
+                </h3>
+                {pokQolInstalled && (
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-semibold text-emerald-300">
+                    Installed
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+                Our custom lightweight Valheim QoL mod: place a sign reading{' '}
+                <code className="text-amber-300">[DROPOFF]</code> next to a chest to auto-sort loot
+                into matching nearby chests, press <code className="text-amber-300">Alt + G</code>{' '}
+                to quick-stack, and automatically craft/build from nearby chests!
+              </p>
+            </div>
+            <div>
+              <button
+                onClick={handleInstallPokQoL}
+                disabled={Boolean(installingId)}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-semibold text-xs cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                {installingId === 'POK-POKValheimQoL'
+                  ? 'Installing...'
+                  : pokQolInstalled
+                    ? 'Reinstall / Update POK-QoL'
+                    : 'Install POK-Valheim QoL Pack'}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-gradient-to-br from-sky-500/10 via-[#111622] to-[#111622] border border-sky-500/30 p-5 flex flex-col justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-sky-200 flex items-center gap-2">
+                <PackageCheck className="w-4 h-4 text-sky-400" />
+                1-Click Player Modpack Installer
+              </h3>
+              <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+                Bundles BepInEx + every enabled mod &amp; config on this realm (including POK-QoL
+                and any Thunderstore mods) with a Windows{' '}
+                <code className="text-sky-300">Install-POK-Mods.bat</code> auto-installer so friends
+                just unzip, double-click, and launch Valheim from Steam!
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={api.getClientModpackUrl(selectedServerId)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs"
+              >
+                <Download className="w-3.5 h-3.5" /> Download Player Installer (.zip)
+              </a>
+              <button
+                onClick={handleCopyShareLink}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold text-xs cursor-pointer"
+              >
+                <Share2 className="w-3.5 h-3.5 text-sky-400" /> Copy Link for Friends
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SUBTAB 1: BROWSE THUNDERSTORE */}
       {subTab === 'browse' && (

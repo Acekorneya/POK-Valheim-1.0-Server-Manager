@@ -16,7 +16,7 @@ import { serversRouter } from './routes/servers.js';
 import { worldsRouter } from './routes/worlds.js';
 import { backupsRouter } from './routes/backups.js';
 import { updatesRouter } from './routes/updates.js';
-import { modsRouter } from './routes/mods.js';
+import { modsRouter, publicModsRouter } from './routes/mods.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,6 +40,8 @@ async function bootstrap() {
     });
   });
   app.use('/api/auth', authRouter);
+  // Public shareable client modpack download link for players (no admin login needed)
+  app.use('/api/mods/public', publicModsRouter);
 
   // Protected API routes
   app.use('/api/servers', requireAuth, serversRouter);

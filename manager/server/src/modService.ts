@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
+import archiver from 'archiver';
+import type { Response } from 'express';
 import { getServerConfigDir } from './config.js';
 import { store } from './store.js';
 import type { InstalledMod, ServerModsState, ThunderstoreModSummary } from './types.js';
 
 const THUNDERSTORE_VALHEIM_API = 'https://thunderstore.io/c/valheim/api/v1/package/';
 const BEPINEX_FULL_NAME = 'denikson-BepInExPack_Valheim';
+const POK_QOL_FULL_NAME = 'POK-POKValheimQoL';
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 interface ThunderstoreRawVersion {
@@ -507,6 +510,209 @@ class ModService {
     fs.writeFileSync(path.join(dir, safe), content, 'utf-8');
     store.addActivity('server', `Updated mod config "${safe}" for server ${serverId}`);
     store.save();
+  }
+
+  async installPokQoL(serverId: string): Promise<ServerModsState> {
+    const server = store.getServer(serverId);
+    if (!server) throw new Error(`Server not found: ${serverId}`);
+
+    const dllSource = process.env.POK_QOL_DLL_PATH || '/app/pok-qol/POKValheimQoL.dll';
+    if (!fs.existsSync(dllSource)) {
+      throw new Error(`POKValheimQoL.dll not found at ${dllSource}`);
+    }
+
+    const modsRoot = getModsRootDir(serverId);
+    if (!fs.existsSync(path.join(modsRoot, 'BepInEx', 'core', 'BepInEx.Preloader.dll'))) {
+      await this.installThunderstoreMod(serverId, BEPINEX_FULL_NAME, false);
+    }
+
+    const targetDir = path.join(modsRoot, 'BepInEx', 'plugins', POK_QOL_FULL_NAME);
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.copyFileSync(dllSource, path.join(targetDir, 'POKValheimQoL.dll'));
+
+    const manifest = this.readManifest(serverId);
+    manifest.mods = manifest.mods.filter((m) => m.fullName !== POK_QOL_FULL_NAME);
+    manifest.mods.unshift({
+      fullName: POK_QOL_FULL_NAME,
+      name: 'POK-Valheim QoL Pack',
+      owner: 'POK-Valheim Built-In',
+      version: '1.0.0',
+      description:
+        '[DROPOFF] Auto-Sort Drop-Off Chest, Alt+G Quick-Stack, and Craft & Build From Nearby Chests.',
+      enabled: true,
+      installedAt: new Date().toISOString(),
+      source: 'custom',
+      pluginDirName: POK_QOL_FULL_NAME,
+    });
+    this.writeManifest(serverId, manifest);
+
+    if (!server.modsEnabled) {
+      this.setServerModsEnabled(serverId, true);
+    }
+
+    store.addActivity('server', `Installed POK-Valheim QoL Pack on "${server.name}"`);
+    store.save();
+    return this.getServerModsState(serverId);
+  }
+
+  async streamClientModpackZip(serverId: string, res: Response): Promise<void> {
+    const server = store.getServer(serverId);
+    if (!server) {
+      res.status(404).json({ error: 'Server not found' });
+      return;
+    }
+
+    const modsRoot = getModsRootDir(serverId);
+    if (!fs.existsSync(path.join(modsRoot, 'BepInEx', 'core', 'BepInEx.Preloader.dll'))) {
+      await this.installThunderstoreMod(serverId, BEPINEX_FULL_NAME, false);
+    }
+
+    const safeServer = server.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const zipName = `POK-${safeServer}-ClientMods.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.pipe(res);
+
+    // 1. Add Windows BepInEx loader root files
+    for (const rootFile of ['winhttp.dll', 'doorstop_config.ini', '.doorstop_version']) {
+      const p = path.join(modsRoot, rootFile);
+      if (fs.existsSync(p)) {
+        archive.file(p, { name: `payload/${rootFile}` });
+      }
+    }
+
+    // 2. Add BepInEx core & config
+    const coreDir = path.join(modsRoot, 'BepInEx', 'core');
+    if (fs.existsSync(coreDir)) {
+      archive.directory(coreDir, 'payload/BepInEx/core');
+    }
+    const cfgDir = path.join(modsRoot, 'BepInEx', 'config');
+    if (fs.existsSync(cfgDir)) {
+      archive.directory(cfgDir, 'payload/BepInEx/config');
+    }
+
+    // 3. Add all ENABLED plugins (excluding server-only POKValheimBridge)
+    const pluginsDir = path.join(modsRoot, 'BepInEx', 'plugins');
+    if (fs.existsSync(pluginsDir)) {
+      for (const entry of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
+        if (entry.name.toLowerCase().includes('pokvalheimbridge')) continue;
+        const full = path.join(pluginsDir, entry.name);
+        if (entry.isDirectory()) {
+          archive.directory(full, `payload/BepInEx/plugins/${entry.name}`);
+        } else if (entry.isFile()) {
+          archive.file(full, { name: `payload/BepInEx/plugins/${entry.name}` });
+        }
+      }
+    }
+
+    const patchersDir = path.join(modsRoot, 'BepInEx', 'patchers');
+    if (fs.existsSync(patchersDir)) {
+      archive.directory(patchersDir, 'payload/BepInEx/patchers');
+    }
+
+    // 4. Add 1-Click Windows Auto-Installer (.bat)
+    const installBat = `@echo off
+setlocal enabledelayedexpansion
+title POK-Valheim 1-Click Client Mod Installer (${server.name})
+echo ============================================================
+echo   POK-Valheim 1-Click Mod Installer
+echo   Realm: ${server.name}
+echo ============================================================
+echo.
+
+set "VALHEIM_DIR="
+
+:: 1. Check default Steam path
+if exist "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Valheim\\valheim.exe" (
+  set "VALHEIM_DIR=C:\\Program Files (x86)\\Steam\\steamapps\\common\\Valheim"
+)
+
+:: 2. Check Steam registry + libraryfolders.vdf across all drives via PowerShell
+if not defined VALHEIM_DIR (
+  for /f "usebackq delims=" %%I in (\`powershell -NoProfile -Command "$paths=@(); try { $sp=(Get-ItemProperty 'HKCU:\\Software\\Valve\\Steam' -ErrorAction Stop).SteamPath; if($sp){$paths+=$sp} } catch {}; $vdf=Join-Path $paths[0] 'steamapps\\libraryfolders.vdf'; if(Test-Path $vdf){ Get-Content $vdf | ForEach-Object { if($_ -match '\"path\"\\s+\"([^\"]+)\"'){ $paths += ($matches[1] -replace '\\\\\\\\','\\') } } }; foreach($d in 'C','D','E','F','G','H','J'){ $paths += ($d + ':\\SteamLibrary'); $paths += ($d + ':\\Games\\Steam') }; foreach($p in ($paths | Select-Object -Unique)){ $cand = Join-Path $p 'steamapps\\common\\Valheim'; if(Test-Path (Join-Path $cand 'valheim.exe')){ Write-Output $cand; break } }"\`) do (
+    set "VALHEIM_DIR=%%I"
+  )
+)
+
+if not defined VALHEIM_DIR (
+  echo Could not auto-detect your Valheim folder.
+  set /p "VALHEIM_DIR=Paste your Valheim folder path (containing valheim.exe): "
+)
+
+set "VALHEIM_DIR=%VALHEIM_DIR:"=%"
+if not exist "%VALHEIM_DIR%\\valheim.exe" (
+  echo.
+  echo [ERROR] valheim.exe not found in: "%VALHEIM_DIR%"
+  pause
+  exit /b 1
+)
+
+echo Found Valheim at: "%VALHEIM_DIR%"
+echo.
+echo Installing BepInEx and realm mods...
+xcopy "%~dp0payload\\*" "%VALHEIM_DIR%\\" /E /Y /I >nul
+
+echo.
+echo ============================================================
+echo   SUCCESS! Mods installed for "${server.name}"!
+echo   Just launch Valheim from Steam normally and join!
+echo   (To revert to vanilla anytime, run Uninstall-POK-Mods.bat)
+echo ============================================================
+echo.
+pause
+`.replace(/\n/g, '\r\n');
+
+    const uninstallBat = `@echo off
+setlocal
+title POK-Valheim Mod Uninstaller
+echo ============================================================
+echo   POK-Valheim Mod Uninstaller (Revert to 100%% Vanilla)
+echo ============================================================
+echo.
+for /f "usebackq delims=" %%I in (\`powershell -NoProfile -Command "$paths=@('C:\\Program Files (x86)\\Steam'); try { $sp=(Get-ItemProperty 'HKCU:\\Software\\Valve\\Steam' -ErrorAction Stop).SteamPath; if($sp){$paths+=$sp} } catch {}; $vdf=Join-Path $paths[0] 'steamapps\\libraryfolders.vdf'; if(Test-Path $vdf){ Get-Content $vdf | ForEach-Object { if($_ -match '\"path\"\\s+\"([^\"]+)\"'){ $paths += ($matches[1] -replace '\\\\\\\\','\\') } } }; foreach($d in 'C','D','E','F','G','H','J'){ $paths += ($d + ':\\SteamLibrary') }; foreach($p in ($paths | Select-Object -Unique)){ $cand = Join-Path $p 'steamapps\\common\\Valheim'; if(Test-Path (Join-Path $cand 'valheim.exe')){ Write-Output $cand; break } }"\`) do set "VALHEIM_DIR=%%I"
+
+if not defined VALHEIM_DIR (
+  set /p "VALHEIM_DIR=Paste your Valheim folder path: "
+)
+set "VALHEIM_DIR=%VALHEIM_DIR:"=%"
+
+if exist "%VALHEIM_DIR%\\BepInEx" rmdir /S /Q "%VALHEIM_DIR%\\BepInEx"
+if exist "%VALHEIM_DIR%\\winhttp.dll" del /F /Q "%VALHEIM_DIR%\\winhttp.dll"
+if exist "%VALHEIM_DIR%\\doorstop_config.ini" del /F /Q "%VALHEIM_DIR%\\doorstop_config.ini"
+if exist "%VALHEIM_DIR%\\.doorstop_version" del /F /Q "%VALHEIM_DIR%\\.doorstop_version"
+
+echo.
+echo Done! Valheim is back to 100%% vanilla.
+pause
+`.replace(/\n/g, '\r\n');
+
+    const readmeTxt = `POK-Valheim Client Modpack for "${server.name}"
+==================================================
+
+HOW TO INSTALL (Takes 5 seconds):
+1. Extract this entire .zip file to any folder.
+2. Double-click "Install-POK-Mods.bat".
+3. Launch Valheim from Steam normally and join the server!
+
+HOW TO USE POK-Valheim QoL (if included):
+- Drop-Off Auto-Sort Chest: Place a Sign next to a chest and write [DROPOFF] on it.
+  Dump your loot in that chest and close it — items automatically fly into nearby
+  chests (within 20m) that already contain that item!
+- Quick-Stack Hotkey: Press Alt + G near your storage room to store matching items.
+- Craft & Build From Chests: Just build or craft normally — materials pull automatically
+  from nearby chests within 15m!
+
+HOW TO UNINSTALL:
+- Double-click "Uninstall-POK-Mods.bat" to return to 100% vanilla Valheim.
+`.replace(/\n/g, '\r\n');
+
+    archive.append(installBat, { name: 'Install-POK-Mods.bat' });
+    archive.append(uninstallBat, { name: 'Uninstall-POK-Mods.bat' });
+    archive.append(readmeTxt, { name: 'README-HOW-TO-INSTALL.txt' });
+
+    await archive.finalize();
   }
 }
 

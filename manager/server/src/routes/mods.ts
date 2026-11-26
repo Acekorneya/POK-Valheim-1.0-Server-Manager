@@ -118,3 +118,24 @@ modsRouter.put('/server/:serverId/configs/:filename', (req, res) => {
     res.status(400).json({ error: (err as Error).message });
   }
 });
+
+modsRouter.post('/server/:serverId/install-pok-qol', async (req, res) => {
+  try {
+    const state = await modService.installPokQoL(String(req.params.serverId));
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+export const publicModsRouter = Router();
+
+publicModsRouter.get('/:serverId/client-modpack.zip', async (req, res) => {
+  try {
+    await modService.streamClientModpackZip(String(req.params.serverId), res);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  }
+});

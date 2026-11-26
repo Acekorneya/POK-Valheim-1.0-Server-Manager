@@ -235,4 +235,10 @@ export const api = {
       `/api/mods/server/${encodeURIComponent(serverId)}/configs/${encodeURIComponent(filename)}`,
       { method: 'PUT', body: JSON.stringify({ content }) }
     ),
+  installPokQoL: (serverId: string) =>
+    request<ServerModsState>(`/api/mods/server/${encodeURIComponent(serverId)}/install-pok-qol`, {
+      method: 'POST',
+    }),
+  getClientModpackUrl: (serverId: string) =>
+    `/api/mods/public/${encodeURIComponent(serverId)}/client-modpack.zip`,
 };
