@@ -270,4 +270,44 @@ export const api = {
     }),
   getClientModpackUrl: (serverId: string) =>
     `/api/mods/public/${encodeURIComponent(serverId)}/client-modpack.zip`,
+
+  // AI Buddy Brain
+  getBuddyConfig: () =>
+    request<{
+      enabled: boolean;
+      provider: 'openrouter' | 'lmstudio' | 'ollama' | 'custom';
+      endpointUrl: string;
+      hasApiKey: boolean;
+      model: string;
+      buddyName: string;
+      personality: string;
+    }>('/api/buddy/config'),
+  updateBuddyConfig: (patch: Record<string, unknown>) =>
+    request<{
+      enabled: boolean;
+      provider: 'openrouter' | 'lmstudio' | 'ollama' | 'custom';
+      endpointUrl: string;
+      hasApiKey: boolean;
+      model: string;
+      buddyName: string;
+      personality: string;
+    }>('/api/buddy/config', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+  listOpenRouterFreeModels: (q = '') =>
+    request<{ models: Array<{ id: string; name: string; contextLength: number }> }>(
+      `/api/buddy/openrouter-free-models?q=${encodeURIComponent(q)}`
+    ),
+  testBuddyBrain: (message: string) =>
+    request<{
+      reply: string;
+      tasks: Array<{ action: string; amount?: number; chestLabel?: string }>;
+      source: string;
+      model?: string;
+      error?: string;
+    }>('/api/buddy/test', {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    }),
 };

@@ -6,6 +6,7 @@ import {
   Archive,
   DownloadCloud,
   Puzzle,
+  Bot,
   Plus,
   LogOut,
   Activity,
@@ -32,8 +33,9 @@ import { WorldsView } from './components/WorldsView';
 import { BackupsView } from './components/BackupsView';
 import { UpdatesView } from './components/UpdatesView';
 import { ModsView } from './components/ModsView';
+import { BuddyView } from './components/BuddyView';
 
-type Tab = 'servers' | 'worlds' | 'mods' | 'backups' | 'updates';
+type Tab = 'servers' | 'worlds' | 'mods' | 'buddy' | 'backups' | 'updates';
 
 export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
@@ -165,6 +167,7 @@ export default function App() {
                 { id: 'servers', label: 'Realms', icon: Server, badge: servers.length },
                 { id: 'worlds', label: 'Worlds & Saves', icon: Globe, badge: worlds.length },
                 { id: 'mods', label: 'Mods', icon: Puzzle },
+                { id: 'buddy', label: 'AI Buddy', icon: Bot },
                 { id: 'backups', label: 'Backups', icon: Archive, badge: backups.length },
                 {
                   id: 'updates',
@@ -241,6 +244,7 @@ export default function App() {
               { id: 'servers', label: 'Realms' },
               { id: 'worlds', label: 'Worlds' },
               { id: 'mods', label: 'Mods' },
+              { id: 'buddy', label: 'AI Buddy' },
               { id: 'backups', label: 'Backups' },
               { id: 'updates', label: 'Updates' },
             ] as const
@@ -442,6 +446,8 @@ export default function App() {
         )}
 
         {tab === 'mods' && <ModsView servers={servers} onNotify={notify} />}
+
+        {tab === 'buddy' && <BuddyView onNotify={notify} />}
 
         {tab === 'backups' && (
           <BackupsView

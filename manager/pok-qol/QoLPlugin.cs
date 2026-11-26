@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.4.0")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.5.0")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -169,7 +169,8 @@ namespace POKValheimQoL
             CacheReflection();
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] v1.4.0 Loaded! Responsive Hit Ownership, ZDO-safe Drop-Off & Sign sorting, O(1) Hammer UI, Valheim 1.0 Upgrader-aware crafting.");
+            BuddyController.Init(Config, _harmony);
+            Logger.LogInfo("[POK-QoL] v1.5.0 Loaded! AI Viking Buddy (Alt+B), Responsive Hit Ownership, ZDO-safe Drop-Off & Sign sorting, Valheim 1.0 crafting.");
         }
 
         private void OnDestroy()
@@ -271,6 +272,7 @@ namespace POKValheimQoL
 
         private void Update()
         {
+            BuddyController.Tick();
             if (!EnableQuickStackHotkey.Value) return;
             if ((Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt)) && Input.GetKeyDown(QuickStackKey.Value))
             {
@@ -1547,6 +1549,77 @@ namespace POKValheimQoL
         private static void Character_Damage_Prefix(object __instance, object __0)
         {
             TryClaimOwnershipForLocalHit(__instance, __0, isCharacter: true);
+        }
+
+        // Public bridge helpers for BuddyController
+        public static Component GetLocalPlayerPublic() => GetLocalPlayer();
+        public static void ShowHudMessagePublic(string text) => ShowHudMessage(text);
+
+        public static List<string> GetNearbyChestLabelsPublic(Vector3 origin, float radius)
+        {
+            var targets = FindNearbyContainers(origin, radius).Where(c => !IsDropOffContainer(c)).ToList();
+            return BuildChestSignLabels(targets).Values.Distinct().ToList();
+        }
+
+        public static Component FindBestBuddyDepositChestPublic(Vector3 origin, float radius, string preferredLabel)
+        {
+            var allNearby = FindNearbyContainers(origin, radius)
+                .OrderBy(c => (c.transform.position - origin).sqrMagnitude)
+                .ToList();
+            if (allNearby.Count == 0) return null;
+
+            var labels = BuildChestSignLabels(allNearby);
+            if (!string.IsNullOrWhiteSpace(preferredLabel))
+            {
+                foreach (var c in allNearby)
+                {
+                    if (labels.TryGetValue(c, out string lbl) &&
+                        lbl.IndexOf(preferredLabel.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        var inv = GetContainerInventory(c);
+                        if (inv != null && InventoryHasEmptySlot(inv)) return c;
+                    }
+                }
+            }
+
+            // Fallback: POK Drop-Off Chest (which auto-sorts!) or any nearest chest with space
+            var dropOff = allNearby.FirstOrDefault(c => IsDropOffContainer(c) && InventoryHasEmptySlot(GetContainerInventory(c)));
+            if (dropOff != null) return dropOff;
+
+            return allNearby.FirstOrDefault(c => InventoryHasEmptySlot(GetContainerInventory(c)));
+        }
+
+        public static int DepositBuddyBagToChestPublic(Component chest, Dictionary<string, int> bag)
+        {
+            var dstInv = GetContainerInventory(chest);
+            if (dstInv == null || _invAddItemPrefabMethod == null) return 0;
+
+            var znetType = AccessTools.TypeByName("ZNetScene");
+            var znet = znetType?.GetProperty("instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+            var getPrefab = znetType?.GetMethod("GetPrefab", new[] { typeof(string) });
+            if (znet == null || getPrefab == null) return 0;
+
+            int deposited = 0;
+            foreach (var kv in bag.ToList())
+            {
+                if (kv.Value <= 0) continue;
+                var prefab = getPrefab.Invoke(znet, new object[] { kv.Key }) as GameObject;
+                if (prefab == null) continue;
+                var added = _invAddItemPrefabMethod.Invoke(dstInv, new object[] { prefab, kv.Value });
+                if (added != null)
+                {
+                    deposited += kv.Value;
+                    bag[kv.Key] = 0;
+                }
+            }
+
+            if (deposited > 0)
+            {
+                OrganizeInventoryGrid(dstInv);
+                SaveContainer(chest);
+                _cacheExpiresAt = -1f;
+            }
+            return deposited;
         }
     }
 }
