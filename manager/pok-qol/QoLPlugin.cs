@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.2")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.3")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -85,11 +85,13 @@ namespace POKValheimQoL
         private static FieldInfo _allStationsField;
         private static MethodInfo _haveBuildStationMethod;
 
-        // 0.35s snapshot caches (combined player + nearby chest counts, and nearby stations)
+        // 0.5s snapshot caches (combined player + nearby chest counts, nearby stations, and per-Piece result cache)
         private static float _cacheExpiresAt = -1f;
         private static Vector3 _cacheOrigin;
         private static readonly Dictionary<string, int> _combinedItemCounts = new Dictionary<string, int>();
         private static readonly HashSet<string> _stationsInRange = new HashSet<string>();
+        private static readonly Dictionary<object, bool> _pieceCanBuildCache = new Dictionary<object, bool>();
+        private static readonly object[] _qualityOneArgs = new object[] { 1 };
 
         private void Awake()
         {
@@ -512,10 +514,11 @@ namespace POKValheimQoL
             if (now < _cacheExpiresAt && (_cacheOrigin - origin).sqrMagnitude < 1.0f)
                 return;
 
-            _cacheExpiresAt = now + 0.35f;
+            _cacheExpiresAt = now + 0.5f;
             _cacheOrigin = origin;
             _combinedItemCounts.Clear();
             _stationsInRange.Clear();
+            _pieceCanBuildCache.Clear();
 
             // 1. Snapshot player inventory + nearby chests
             var playerInv = _playerGetInvMethod?.Invoke(player, null);
@@ -701,7 +704,9 @@ namespace POKValheimQoL
                 string sharedName = GetItemSharedName(itemData);
                 if (string.IsNullOrEmpty(sharedName)) continue;
 
-                int needed = (_reqGetAmountMethod != null ? (int)_reqGetAmountMethod.Invoke(req, new object[] { qualityLevel }) : 0) * mult;
+                int needed = (_reqGetAmountMethod != null
+                    ? (int)_reqGetAmountMethod.Invoke(req, qualityLevel == 1 ? _qualityOneArgs : new object[] { qualityLevel })
+                    : 0) * mult;
                 if (needed <= 0) continue;
 
                 if (!_combinedItemCounts.TryGetValue(sharedName, out int total) || total < needed)
@@ -728,16 +733,29 @@ namespace POKValheimQoL
 
                 RefreshSnapshotIfNeeded(player);
 
+                // O(1) zero-allocation lookup for repeated Hammer UI calls in the same 0.5s window
+                if (_pieceCanBuildCache.TryGetValue(__0, out bool cachedCanBuild))
+                {
+                    __result = cachedCanBuild;
+                    return;
+                }
+
                 // Strict Crafting Station check (Workbench, Forge, Stonecutter, Artisan Table, etc.)
                 var station = _pieceStationField?.GetValue(__0);
                 if (station != null)
                 {
                     var stationName = _stationNameField?.GetValue(station) as string;
-                    if (!IsStationInRange(player, stationName)) return;
+                    if (!IsStationInRange(player, stationName))
+                    {
+                        _pieceCanBuildCache[__0] = false;
+                        return;
+                    }
                 }
 
                 var reqs = _pieceResourcesField?.GetValue(__0) as IEnumerable;
-                if (reqs != null && HasAllResourcesCached(reqs, 1, 1))
+                bool canBuild = reqs != null && HasAllResourcesCached(reqs, 1, 1);
+                _pieceCanBuildCache[__0] = canBuild;
+                if (canBuild)
                 {
                     __result = true;
                 }
