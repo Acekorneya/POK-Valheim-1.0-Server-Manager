@@ -271,6 +271,7 @@ class BuddyService {
           messages,
           temperature: 0.3,
           max_tokens: 1024,
+          ...(cfg.provider === 'openrouter' ? { reasoning: { enabled: false } } : {}),
         }),
       });
       clearTimeout(timeout);
