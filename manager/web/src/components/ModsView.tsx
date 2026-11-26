@@ -339,10 +339,12 @@ export function ModsView({ servers, onNotify }: ModsViewProps) {
                 )}
               </div>
               <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-                Our custom lightweight Valheim QoL mod: place a sign reading{' '}
-                <code className="text-amber-300">[DROPOFF]</code> next to a chest to auto-sort loot
-                into matching nearby chests, press <code className="text-amber-300">Alt + G</code>{' '}
-                to quick-stack, and automatically craft/build from nearby chests!
+                Our custom balanced Valheim QoL mod: craft a copper-tinted{' '}
+                <strong className="text-amber-200">POK Drop-Off Chest</strong> in the Hammer
+                (Furniture tab — <code className="text-amber-300">10 Fine Wood + 4 Copper</code>) to
+                auto-sort loot into nearby matching chests, press{' '}
+                <code className="text-amber-300">Alt + G</code> to quick-stack, and craft/build from
+                nearby chests!
               </p>
             </div>
             <div>

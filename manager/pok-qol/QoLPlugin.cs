@@ -10,10 +10,16 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Auto-Sort & Craft From Chests)", "1.0.0")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.1.0")]
     public class QoLPlugin : BaseUnityPlugin
     {
+        public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
+
         public static ConfigEntry<bool> EnableDropOffSort;
+        public static ConfigEntry<bool> EnableCraftableDropOffChest;
+        public static ConfigEntry<int> DropOffWoodCost;
+        public static ConfigEntry<int> DropOffCopperCost;
+        public static ConfigEntry<bool> AllowSignTagFallback;
         public static ConfigEntry<string> DropOffTag;
         public static ConfigEntry<float> DropOffRadius;
         public static ConfigEntry<bool> EnableQuickStackHotkey;
@@ -23,15 +29,24 @@ namespace POKValheimQoL
 
         private Harmony _harmony;
         private static QoLPlugin _instance;
+        private static GameObject _dropOffPrefab;
 
         private void Awake()
         {
             _instance = this;
 
             EnableDropOffSort = Config.Bind("1. Drop-Off Auto-Sort", "Enabled", true,
-                "When you close a chest near a sign containing the DropOffTag (e.g. [DROPOFF]), items automatically sort into nearby chests that already contain matching items.");
+                "When you close a POK Drop-Off Chest, items automatically sort into nearby chests that already contain matching items.");
+            EnableCraftableDropOffChest = Config.Bind("1. Drop-Off Auto-Sort", "CraftableDropOffChest", true,
+                "Adds the craftable 'POK Drop-Off Chest' to the Hammer build menu (Furniture tab).");
+            DropOffWoodCost = Config.Bind("1. Drop-Off Auto-Sort", "FineWoodCost", 10,
+                "Fine Wood required to build a POK Drop-Off Chest.");
+            DropOffCopperCost = Config.Bind("1. Drop-Off Auto-Sort", "CopperCost", 4,
+                "Copper ingots required to build a POK Drop-Off Chest.");
+            AllowSignTagFallback = Config.Bind("1. Drop-Off Auto-Sort", "AllowSignTagFallback", true,
+                "Also allow marking any normal chest as a drop-off chest using a nearby Sign containing SignTag.");
             DropOffTag = Config.Bind("1. Drop-Off Auto-Sort", "SignTag", "[DROPOFF]",
-                "Text on a nearby Sign (within 3m of a chest) that marks it as an Auto-Sort Drop-Off Box.");
+                "Optional Sign text (within 3m of a chest) if AllowSignTagFallback is enabled.");
             DropOffRadius = Config.Bind("1. Drop-Off Auto-Sort", "SortRadiusMeters", 20f,
                 "Radius (in meters) to search for destination chests.");
 
@@ -47,7 +62,7 @@ namespace POKValheimQoL
 
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] Loaded! Features: [DROPOFF] Auto-Sort Chest, Alt+G Quick-Stack, Craft & Build From Chests.");
+            Logger.LogInfo("[POK-QoL] v1.1.0 Loaded! Craftable POK Drop-Off Chest (FineWood + Copper), Alt+G Quick-Stack, Craft From Chests.");
         }
 
         private void OnDestroy()
@@ -75,6 +90,13 @@ namespace POKValheimQoL
         {
             try
             {
+                // 0. Register craftable POK Drop-Off Chest prefab in ZNetScene
+                var znetAwake = AccessTools.Method("ZNetScene:Awake");
+                if (znetAwake != null)
+                {
+                    _harmony.Patch(znetAwake, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(ZNetScene_Awake_Postfix)));
+                }
+
                 // 1. Drop-off chest auto-sort when closing a container
                 var setInUse = AccessTools.Method("Container:SetInUse");
                 if (setInUse != null)
@@ -82,8 +104,7 @@ namespace POKValheimQoL
                     _harmony.Patch(setInUse, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_SetInUse_Postfix)));
                 }
 
-                // 2. Craft & Build from nearby chests: Inventory.CountItems
-                // Valheim checks Player.GetInventory().CountItems(name) & RemoveItem(name, amount)
+                // 2. Craft & Build from nearby chests
                 var haveReq = AccessTools.Method("Player:HaveRequirements", new[] { AccessTools.TypeByName("Piece"), AccessTools.TypeByName("Player+RequirementMode") });
                 if (haveReq != null)
                 {
@@ -109,6 +130,148 @@ namespace POKValheimQoL
         }
 
         // =========================================================================
+        // 0. CRAFTABLE "POK DROP-OFF CHEST" REGISTRATION (Hammer -> Furniture)
+        // =========================================================================
+
+        private static int GetStableHashCode(string str)
+        {
+            unchecked
+            {
+                int hash1 = 5381;
+                int hash2 = hash1;
+                for (int i = 0; i < str.Length && str[i] != '\0'; i += 2)
+                {
+                    hash1 = ((hash1 << 5) + hash1) ^ str[i];
+                    if (i == str.Length - 1 || str[i + 1] == '\0') break;
+                    hash2 = ((hash2 << 5) + hash2) ^ str[i + 1];
+                }
+                return hash1 + hash2 * 1566083941;
+            }
+        }
+
+        private static void ZNetScene_Awake_Postfix(object __instance)
+        {
+            if (!EnableCraftableDropOffChest.Value) return;
+            try
+            {
+                var zt = __instance.GetType();
+                var getPrefab = zt.GetMethod("GetPrefab", new[] { typeof(string) });
+                var prefabsList = zt.GetField("m_prefabs")?.GetValue(__instance) as IList;
+                var namedPrefabs = zt.GetField("m_namedPrefabs", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance)?.GetValue(__instance) as IDictionary;
+                if (getPrefab == null || prefabsList == null || namedPrefabs == null) return;
+
+                if (_dropOffPrefab == null)
+                {
+                    var woodChest = getPrefab.Invoke(__instance, new object[] { "piece_chest_wood" }) as GameObject;
+                    if (woodChest == null) return;
+
+                    // Create hidden template container parent so instantiated prefab stays inactive
+                    var holder = new GameObject("POK_PrefabHolder");
+                    holder.SetActive(false);
+                    UnityEngine.Object.DontDestroyOnLoad(holder);
+
+                    _dropOffPrefab = UnityEngine.Object.Instantiate(woodChest, holder.transform, false);
+                    _dropOffPrefab.name = DROPOFF_PREFAB_NAME;
+
+                    // Subtle warm copper/gold tint so players recognize the Drop-Off Chest visually
+                    foreach (var renderer in _dropOffPrefab.GetComponentsInChildren<MeshRenderer>(true))
+                    {
+                        var mats = renderer.materials;
+                        for (int i = 0; i < mats.Length; i++)
+                        {
+                            if (mats[i] != null && mats[i].HasProperty("_Color"))
+                            {
+                                mats[i].color = Color.Lerp(mats[i].color, new Color(0.95f, 0.58f, 0.25f, 1f), 0.38f);
+                            }
+                        }
+                        renderer.materials = mats;
+                    }
+
+                    // Configure Container display name
+                    var containerType = AccessTools.TypeByName("Container");
+                    if (containerType != null)
+                    {
+                        var contComp = _dropOffPrefab.GetComponent(containerType);
+                        contComp?.GetType().GetField("m_name")?.SetValue(contComp, "POK Drop-Off Chest");
+                    }
+
+                    // Configure Piece metadata & crafting recipe (FineWood + Copper)
+                    var pieceType = AccessTools.TypeByName("Piece");
+                    var reqType = AccessTools.TypeByName("Piece+Requirement");
+                    var itemDropType = AccessTools.TypeByName("ItemDrop");
+                    if (pieceType != null && reqType != null && itemDropType != null)
+                    {
+                        var pieceComp = _dropOffPrefab.GetComponent(pieceType);
+                        if (pieceComp != null)
+                        {
+                            pieceType.GetField("m_name")?.SetValue(pieceComp, "POK Drop-Off Chest");
+                            pieceType.GetField("m_description")?.SetValue(
+                                pieceComp,
+                                $"Dump loot inside and close to auto-sort into nearby matching chests ({DropOffRadius.Value:0}m)."
+                            );
+
+                            var reqList = new List<object>();
+
+                            void AddReq(string prefabName, int amount)
+                            {
+                                if (amount <= 0) return;
+                                var itemGo = getPrefab.Invoke(__instance, new object[] { prefabName }) as GameObject;
+                                var itemDrop = itemGo?.GetComponent(itemDropType);
+                                if (itemDrop == null) return;
+                                var req = Activator.CreateInstance(reqType);
+                                reqType.GetField("m_resItem")?.SetValue(req, itemDrop);
+                                reqType.GetField("m_amount")?.SetValue(req, amount);
+                                reqType.GetField("m_recover")?.SetValue(req, true);
+                                reqList.Add(req);
+                            }
+
+                            AddReq("FineWood", DropOffWoodCost.Value);
+                            AddReq("Copper", DropOffCopperCost.Value);
+
+                            if (reqList.Count > 0)
+                            {
+                                var arr = Array.CreateInstance(reqType, reqList.Count);
+                                for (int i = 0; i < reqList.Count; i++) arr.SetValue(reqList[i], i);
+                                pieceType.GetField("m_resources")?.SetValue(pieceComp, arr);
+                            }
+                        }
+                    }
+                }
+
+                // Register prefab in ZNetScene
+                int hash = GetStableHashCode(DROPOFF_PREFAB_NAME);
+                if (!prefabsList.Contains(_dropOffPrefab))
+                {
+                    prefabsList.Add(_dropOffPrefab);
+                }
+                namedPrefabs[hash] = _dropOffPrefab;
+
+                // Register into Hammer PieceTable so players can build it
+                var hammerGo = getPrefab.Invoke(__instance, new object[] { "Hammer" }) as GameObject;
+                var itemDropT = AccessTools.TypeByName("ItemDrop");
+                if (hammerGo != null && itemDropT != null)
+                {
+                    var hammerDrop = hammerGo.GetComponent(itemDropT);
+                    var itemData = hammerDrop?.GetType().GetField("m_itemData")?.GetValue(hammerDrop);
+                    var shared = itemData?.GetType().GetField("m_shared")?.GetValue(itemData);
+                    var pieceTable = shared?.GetType().GetField("m_buildPieces")?.GetValue(shared);
+                    var pieces = pieceTable?.GetType().GetField("m_pieces")?.GetValue(pieceTable) as IList;
+                    if (pieces != null && !pieces.Contains(_dropOffPrefab))
+                    {
+                        pieces.Add(_dropOffPrefab);
+                        _instance?.Logger.LogInfo(
+                            $"[POK-QoL] Registered craftable '{DROPOFF_PREFAB_NAME}' in Hammer menu ({DropOffWoodCost.Value} FineWood + {DropOffCopperCost.Value} Copper)."
+                        );
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _instance?.Logger.LogWarning($"[POK-QoL] Failed to register craftable Drop-Off Chest: {ex.Message}");
+            }
+        }
+
+        // =========================================================================
         // HELPERS (Reflection-safe across Valheim versions)
         // =========================================================================
 
@@ -127,7 +290,6 @@ namespace POKValheimQoL
                 var show = hudType?.GetMethod("ShowMessage");
                 if (hud != null && show != null)
                 {
-                    // MessageType.TopLeft = 1
                     show.Invoke(hud, new object[] { 1, text, 0, null });
                 }
             }
@@ -147,7 +309,6 @@ namespace POKValheimQoL
                 if (comp == null || comp == exclude) continue;
                 if (Vector3.Distance(origin, comp.transform.position) > radius) continue;
 
-                // Ensure valid NView & not currently locked/in-use by someone else
                 var nview = comp.GetType().GetField("m_nview", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance)?.GetValue(comp);
                 if (nview == null) continue;
                 var isValid = nview.GetType().GetMethod("IsValid")?.Invoke(nview, null);
@@ -163,6 +324,16 @@ namespace POKValheimQoL
 
         private static bool IsDropOffContainer(Component container)
         {
+            if (container == null) return false;
+
+            // 1. Crafted POK Drop-Off Chest prefab
+            if (container.gameObject.name.StartsWith(DROPOFF_PREFAB_NAME, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // 2. Optional [DROPOFF] sign fallback
+            if (!AllowSignTagFallback.Value) return false;
             var tag = (DropOffTag.Value ?? "[DROPOFF]").Trim();
             if (string.IsNullOrEmpty(tag)) return false;
 
@@ -205,12 +376,6 @@ namespace POKValheimQoL
             return shared?.GetType().GetField("m_name")?.GetValue(shared)?.ToString() ?? "";
         }
 
-        private static int GetItemStack(object item)
-        {
-            var val = item?.GetType().GetField("m_stack")?.GetValue(item);
-            return val is int i ? i : 0;
-        }
-
         private static bool InventoryHasItemNamed(object inventory, string sharedName)
         {
             foreach (var item in GetAllItems(inventory))
@@ -230,7 +395,7 @@ namespace POKValheimQoL
         }
 
         // =========================================================================
-        // 1. DROP-OFF AUTO-SORT CHEST (Triggers when closing a [DROPOFF] chest)
+        // 1. DROP-OFF AUTO-SORT CHEST (Triggers when closing a Drop-Off Chest)
         // =========================================================================
 
         private static void Container_SetInUse_Postfix(object __instance, bool inUse)
@@ -320,7 +485,6 @@ namespace POKValheimQoL
             int moved = 0;
             foreach (var item in items)
             {
-                // Skip equipped items and top hotbar row (m_gridPos.y == 0)
                 var equipped = item.GetType().GetField("m_equipped")?.GetValue(item);
                 if (equipped is bool eq && eq) continue;
                 var gridPos = item.GetType().GetField("m_gridPos")?.GetValue(item);
@@ -481,7 +645,6 @@ namespace POKValheimQoL
                     int missing = needed - inPlayer;
                     if (missing <= 0) continue;
 
-                    // Pull missing items from nearby chests into player inventory right before ConsumeResources runs
                     foreach (var chest in chests)
                     {
                         if (missing <= 0) break;
