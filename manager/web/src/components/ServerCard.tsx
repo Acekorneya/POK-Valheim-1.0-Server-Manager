@@ -18,6 +18,7 @@ import {
   Users,
   Save,
 } from 'lucide-react';
+import { copyToClipboard } from '../api';
 import type { ServerWithStatus } from '../types';
 
 interface ServerCardProps {
@@ -61,8 +62,8 @@ export function ServerCard({
   const hostDisplay = publicHost || window.location.hostname;
   const connectStr = `${hostDisplay}:${server.port}`;
 
-  const copyText = (field: string, value: string) => {
-    navigator.clipboard.writeText(value);
+  const copyText = async (field: string, value: string) => {
+    await copyToClipboard(value);
     setCopiedField(field);
     setTimeout(() => setCopiedField(null), 1800);
   };

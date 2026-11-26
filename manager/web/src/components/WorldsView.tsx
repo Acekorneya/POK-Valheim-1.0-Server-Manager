@@ -10,7 +10,7 @@ import {
   FolderArchive,
   Play,
 } from 'lucide-react';
-import { api } from '../api';
+import { api, copyToClipboard } from '../api';
 import type { ServerWithStatus, WorldSaveInfo } from '../types';
 
 interface WorldsViewProps {
@@ -202,8 +202,8 @@ export function WorldsView({ worlds, servers, onRefresh, onNotify }: WorldsViewP
                     <td className="px-5 py-3.5 font-mono-code">
                       {w.seed ? (
                         <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(w.seed || '');
+                          onClick={async () => {
+                            await copyToClipboard(w.seed || '');
                             onNotify(`Copied seed "${w.seed}"`);
                           }}
                           className="inline-flex items-center gap-1.5 text-emerald-300 hover:text-emerald-200 cursor-pointer"

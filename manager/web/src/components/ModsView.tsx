@@ -18,7 +18,7 @@ import {
   PackageCheck,
   Share2,
 } from 'lucide-react';
-import { api } from '../api';
+import { api, copyToClipboard } from '../api';
 import type { ServerModsState, ServerWithStatus, ThunderstoreModSummary } from '../types';
 
 interface ModsViewProps {
@@ -220,11 +220,15 @@ export function ModsView({ servers, onNotify }: ModsViewProps) {
     }
   };
 
-  const handleCopyShareLink = () => {
+  const handleCopyShareLink = async () => {
     if (!selectedServerId) return;
     const url = `${window.location.origin}${api.getClientModpackUrl(selectedServerId)}`;
-    navigator.clipboard.writeText(url);
-    onNotify('Copied 1-Click Player Modpack link! Paste it in Discord for your friends.');
+    const ok = await copyToClipboard(url);
+    if (ok) {
+      onNotify('Copied 1-Click Player Modpack link! Paste it in Discord for your friends.');
+    } else {
+      window.prompt('Copy this Player Modpack link:', url);
+    }
   };
 
   const installedMap = new Map(
