@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
@@ -10,7 +11,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.3")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.4")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -102,6 +103,10 @@ namespace POKValheimQoL
         private static PropertyInfo _tmpTextProp;
         private static PropertyInfo _tmpColorProp;
 
+        private static PropertyInfo _locInstanceProp;
+        private static MethodInfo _locLocalizeMethod;
+        private static readonly Regex _richTextRegex = new Regex("<[^>]+>", RegexOptions.Compiled);
+
         // 0.5s snapshot caches (combined player + nearby chest counts, nearby stations, and per-Piece result cache)
         private static float _cacheExpiresAt = -1f;
         private static Vector3 _cacheOrigin;
@@ -146,7 +151,7 @@ namespace POKValheimQoL
             CacheReflection();
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] v1.3.3 Loaded! Smart category Drop-Off Chest, O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware Forge/Bench crafting.");
+            Logger.LogInfo("[POK-QoL] v1.3.4 Loaded! Sign-labeled & smart category Drop-Off Chest, O(1) cached Hammer UI, Valheim 1.0 Upgrader-aware Forge/Bench crafting.");
         }
 
         private void OnDestroy()
@@ -230,6 +235,10 @@ namespace POKValheimQoL
             _tmpTextType = AccessTools.TypeByName("TMPro.TMP_Text");
             _tmpTextProp = _tmpTextType?.GetProperty("text", BindingFlags.Public | BindingFlags.Instance);
             _tmpColorProp = _tmpTextType?.GetProperty("color", BindingFlags.Public | BindingFlags.Instance);
+
+            var locType = AccessTools.TypeByName("Localization");
+            _locInstanceProp = locType?.GetProperty("instance", BindingFlags.Public | BindingFlags.Static);
+            _locLocalizeMethod = locType?.GetMethod("Localize", new[] { typeof(string) });
         }
 
         private void Update()
@@ -701,6 +710,197 @@ namespace POKValheimQoL
             return hasAny;
         }
 
+        private static string GetLocalizedItemName(object item)
+        {
+            string raw = GetItemSharedName(item);
+            if (string.IsNullOrEmpty(raw)) return "";
+            try
+            {
+                var loc = _locInstanceProp?.GetValue(null);
+                if (loc != null && _locLocalizeMethod != null)
+                {
+                    var localized = _locLocalizeMethod.Invoke(loc, new object[] { raw }) as string;
+                    if (!string.IsNullOrEmpty(localized)) return localized.Trim();
+                }
+            }
+            catch { }
+            return raw.Replace("$item_", "").Replace("_", " ").Trim();
+        }
+
+        // Maps each non-[DROPOFF] Sign to its SINGLE closest chest within 1.65m so adjacent chests never steal each other's signs
+        private static Dictionary<Component, string> BuildChestSignLabels(List<Component> targets)
+        {
+            var labels = new Dictionary<Component, string>();
+            var bestDistByChest = new Dictionary<Component, float>();
+            const float maxDistSq = 1.65f * 1.65f;
+            var dropTag = (DropOffTag.Value ?? "[DROPOFF]").Trim();
+            List<Component> dead = null;
+
+            foreach (var signComp in _trackedSigns)
+            {
+                if (signComp == null || !signComp.gameObject)
+                {
+                    if (dead == null) dead = new List<Component>();
+                    dead.Add(signComp);
+                    continue;
+                }
+
+                var raw = _signGetTextMethod?.Invoke(signComp, null)?.ToString() ?? "";
+                var clean = _richTextRegex.Replace(raw, "").Trim();
+                if (string.IsNullOrEmpty(clean)) continue;
+                if (!string.IsNullOrEmpty(dropTag) && clean.IndexOf(dropTag, StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
+
+                Component closestChest = null;
+                float closestDistSq = maxDistSq;
+                var signPos = signComp.transform.position;
+
+                foreach (var chest in targets)
+                {
+                    float dSq = (chest.transform.position - signPos).sqrMagnitude;
+                    if (dSq < closestDistSq)
+                    {
+                        closestDistSq = dSq;
+                        closestChest = chest;
+                    }
+                }
+
+                if (closestChest != null && (!bestDistByChest.TryGetValue(closestChest, out float prev) || closestDistSq < prev))
+                {
+                    bestDistByChest[closestChest] = closestDistSq;
+                    labels[closestChest] = clean;
+                }
+            }
+
+            if (dead != null)
+                foreach (var d in dead) _trackedSigns.Remove(d);
+            return labels;
+        }
+
+        private static string NormalizeWord(string s)
+        {
+            s = (s ?? "").Trim().ToLowerInvariant();
+            if (s.EndsWith("ies") && s.Length > 4) return s.Substring(0, s.Length - 3) + "y";
+            if (s.EndsWith("es") && s.Length > 4 && !s.EndsWith("ores") && !s.EndsWith("stones") && !s.EndsWith("hides"))
+                return s.Substring(0, s.Length - 2);
+            if (s.EndsWith("s") && s.Length > 3) return s.Substring(0, s.Length - 1);
+            return s;
+        }
+
+        // Checks whether an item matches a chest's Sign label (supports item names like "Wood", "Rocks", "Copper"
+        // AND category labels like "Food", "Ores", "Hides", "Trophies", "Valuables", plus multi-labels like "Wood / Stone")
+        private static bool ItemMatchesSignLabel(object item, string signLabel, string itemCategory)
+        {
+            if (string.IsNullOrEmpty(signLabel)) return false;
+
+            string displayName = GetLocalizedItemName(item).ToLowerInvariant();
+            string rawName = GetItemSharedName(item).Replace("$item_", "").Replace("_", " ").ToLowerInvariant();
+            var tokens = signLabel.Split(new[] { ',', '/', '|', '&', '\n', '\r', ';' }, StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var rawTok in tokens)
+            {
+                string tok = rawTok.Trim().ToLowerInvariant();
+                if (tok.Length < 2) continue;
+                string normTok = NormalizeWord(tok);
+
+                // 1. Direct item display name / prefab name match (e.g. "Wood", "Fine Wood", "Copper", "Stone", "Leather")
+                if (displayName == tok || rawName == tok || NormalizeWord(displayName) == normTok)
+                    return true;
+                if (displayName.Contains(normTok) || rawName.Contains(normTok))
+                    return true;
+
+                // 2. Common player synonyms for specific items
+                if ((normTok == "rock" || normTok == "cobble") && (displayName.Contains("stone") || rawName.Contains("stone") || rawName.Contains("marble") || rawName.Contains("grausten")))
+                    return true;
+                if ((normTok == "log" || normTok == "lumber") && (displayName.Contains("wood") || rawName.Contains("wood")))
+                    return true;
+
+                // 3. Category sign labels (e.g. "Food", "Ores", "Metals", "Hides", "Drops", "Trophies", "Valuables", "Ammo", "Armor", "Weapons")
+                switch (normTok)
+                {
+                    case "food":
+                    case "cook":
+                    case "cooking":
+                    case "kitchen":
+                    case "meal":
+                    case "farm":
+                    case "farming":
+                    case "crop":
+                    case "seed":
+                    case "potion":
+                    case "mead":
+                    case "drink":
+                    case "eat":
+                        if (itemCategory == "Food") return true;
+                        break;
+
+                    case "ore":
+                    case "metal":
+                    case "ingot":
+                    case "bar":
+                    case "forge":
+                    case "smelt":
+                    case "smelting":
+                    case "mineral":
+                        if (itemCategory == "OreAndMetal") return true;
+                        break;
+
+                    case "build":
+                    case "building":
+                    case "mat":
+                    case "material":
+                        if (itemCategory == "StoneAndWood") return true;
+                        break;
+
+                    case "hide":
+                    case "pelt":
+                    case "leather":
+                    case "mob":
+                    case "drop":
+                    case "monster":
+                    case "loot":
+                    case "creature":
+                        if (itemCategory == "HidesAndDrops") return true;
+                        break;
+
+                    case "gold":
+                    case "coin":
+                    case "treasure":
+                    case "valuable":
+                    case "gem":
+                    case "money":
+                    case "bank":
+                        if (itemCategory == "Valuables") return true;
+                        break;
+
+                    case "trophy":
+                    case "head":
+                        if (itemCategory == "Trophy") return true;
+                        break;
+
+                    case "ammo":
+                    case "arrow":
+                    case "bolt":
+                        if (itemCategory == "Ammo") return true;
+                        break;
+
+                    case "armor":
+                    case "armour":
+                    case "gear":
+                    case "clothe":
+                        if (itemCategory == "Armor") return true;
+                        break;
+
+                    case "weapon":
+                    case "tool":
+                    case "combat":
+                        if (itemCategory == "WeaponsAndTools") return true;
+                        break;
+                }
+            }
+            return false;
+        }
+
         private static bool InventoryHasEmptySlot(object inventory)
         {
             if (_invHaveEmptySlotMethod != null)
@@ -777,6 +977,9 @@ namespace POKValheimQoL
                     .OrderBy(c => (c.transform.position - origin).sqrMagnitude)
                     .ToList();
 
+                // Map each nearby Sign to its single closest chest (within 1.65m)
+                var chestLabels = BuildChestSignLabels(targets);
+
                 int movedStacks = 0;
                 var modifiedChests = new HashSet<Component>();
 
@@ -798,36 +1001,49 @@ namespace POKValheimQoL
                 {
                     string name = GetItemSharedName(item);
                     if (string.IsNullOrEmpty(name)) continue;
+                    string category = GetSmartCategory(item);
                     bool placed = false;
 
-                    // Pass 1: Chest that ALREADY has this exact item
+                    // Pass 0 (Highest Priority): Chest with a Sign label matching this item or category
+                    // (works even if the signed chest is completely empty!)
                     foreach (var target in targets)
                     {
-                        var dstInv = GetContainerInventory(target);
-                        if (dstInv == null || !InventoryHasItemNamed(dstInv, name)) continue;
+                        if (!chestLabels.TryGetValue(target, out string label)) continue;
+                        if (!ItemMatchesSignLabel(item, label, category)) continue;
                         if (TryMoveTo(item, target)) { placed = true; break; }
+                    }
+
+                    // Pass 1: Chest that ALREADY has this exact item
+                    if (!placed)
+                    {
+                        foreach (var target in targets)
+                        {
+                            var dstInv = GetContainerInventory(target);
+                            if (dstInv == null || !InventoryHasItemNamed(dstInv, name)) continue;
+                            if (TryMoveTo(item, target)) { placed = true; break; }
+                        }
                     }
 
                     if (!placed && DropOffUseEmptySlots.Value)
                     {
-                        string category = GetSmartCategory(item);
-
-                        // Pass 2: Chest with empty slots whose items ALL belong to the SAME smart category
-                        // (e.g. Food stays with Food, Ore/Metal with Ore/Metal, Stone/Wood with Stone/Wood)
+                        // Pass 2: Unlabeled chest with empty slots whose items ALL belong to the SAME smart category
+                        // (Signed chests are reserved for their sign label!)
                         foreach (var target in targets)
                         {
+                            if (chestLabels.ContainsKey(target)) continue;
                             var dstInv = GetContainerInventory(target);
                             if (dstInv == null || !InventoryHasEmptySlot(dstInv)) continue;
                             if (!InventoryMatchesCategoryStrictly(dstInv, category)) continue;
                             if (TryMoveTo(item, target)) { placed = true; break; }
                         }
 
-                        // Pass 3: ONLY a COMPLETELY EMPTY chest (starts a new dedicated chest for this category;
-                        // NEVER dumps unrelated items like rocks into a Food chest!)
+                        // Pass 3: ONLY a COMPLETELY EMPTY, UNLABELED chest (starts a new dedicated chest for this category;
+                        // NEVER dumps unrelated items into a Food chest or a Sign-labeled chest!)
                         if (!placed)
                         {
                             foreach (var target in targets)
                             {
+                                if (chestLabels.ContainsKey(target)) continue;
                                 var dstInv = GetContainerInventory(target);
                                 if (dstInv == null || GetInventoryItemCount(dstInv) != 0) continue;
                                 if (TryMoveTo(item, target)) { placed = true; break; }
