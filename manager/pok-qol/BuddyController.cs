@@ -40,6 +40,13 @@ namespace POKValheimQoL
         private static Component _buddyMonsterAi;
 
         private static int _axeDurability = 100;
+        private static string _equippedAxePrefab = "";
+        private static bool _axeBorrowedFromChest;
+        private static string _equippedPickaxePrefab = "";
+        private static bool _pickaxeBorrowedFromChest;
+        private static Component _pendingToolChest;
+        private static string _pendingToolPrefab;
+        private static string _pendingToolDisplay;
         private static readonly Dictionary<string, int> _bag = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private static float _nextSwingAt;
         private static float _nextScanAt;
@@ -350,12 +357,17 @@ namespace POKValheimQoL
                 }
 
                 _monsterAiSetFollowMethod?.Invoke(_buddyMonsterAi, new object[] { player.gameObject });
-                _currentHandItem = "";
-                EquipVisualTool("AxeBronze");
+                _currentHandItem = "INIT";
+                _equippedAxePrefab = "";
+                _axeBorrowedFromChest = false;
+                _equippedPickaxePrefab = "";
+                _pickaxeBorrowedFromChest = false;
+                _pendingToolChest = null;
+                EquipVisualTool("");
                 _axeDurability = 100;
                 _activeTask = new BuddyTask { Action = "follow" };
                 _taskQueue.Clear();
-                QoLPlugin.ShowHudMessagePublic($"[{GetName()}] Summoned! Type 'buddy chop 30 wood and put it in the wood chest' in chat!");
+                QoLPlugin.ShowHudMessagePublic($"[{GetName()}] Summoned! Type 'buddy chop 20 wood and put it in the POK chest' in chat!");
             }
             catch (Exception ex)
             {
@@ -408,6 +420,18 @@ namespace POKValheimQoL
             var player = QoLPlugin.GetLocalPlayerPublic();
             if (_buddyGo != null)
             {
+                Vector3 pos = _buddyGo.transform.position;
+                // Safely return any borrowed player tools before despawning so nothing is ever lost!
+                if (_axeBorrowedFromChest && !string.IsNullOrEmpty(_equippedAxePrefab))
+                    QoLPlugin.ReturnToolSafelyPublic(pos, _equippedAxePrefab);
+                if (_pickaxeBorrowedFromChest && !string.IsNullOrEmpty(_equippedPickaxePrefab))
+                    QoLPlugin.ReturnToolSafelyPublic(pos, _equippedPickaxePrefab);
+                _equippedAxePrefab = "";
+                _axeBorrowedFromChest = false;
+                _equippedPickaxePrefab = "";
+                _pickaxeBorrowedFromChest = false;
+                _pendingToolChest = null;
+
                 DestroyNetworkObject(_buddyGo);
                 _buddyGo = null;
                 _buddyChar = null;
@@ -637,9 +661,57 @@ namespace POKValheimQoL
 
         private static void TickHarvest(float dt, bool isWood)
         {
-            EquipVisualTool(isWood ? "AxeBronze" : "PickaxeBronze");
             _monsterAiSetFollowMethod?.Invoke(_buddyMonsterAi, new object[] { null });
             Vector3 bPos = _buddyGo.transform.position;
+
+            // 0. Make sure Buddy actually grabs a real Axe/Pickaxe from a chest (or crafts a basic one) first!
+            string currentTool = isWood ? _equippedAxePrefab : _equippedPickaxePrefab;
+            if (string.IsNullOrEmpty(currentTool))
+            {
+                if (_pendingToolChest == null)
+                {
+                    if (QoLPlugin.FindBestToolChestPublic(bPos, 55f, isWood, out var tc, out var tp, out var td))
+                    {
+                        _pendingToolChest = tc;
+                        _pendingToolPrefab = tp;
+                        _pendingToolDisplay = td;
+                        QoLPlugin.ShowHudMessagePublic($"[{GetName()}] Heading to chest to grab {td}...");
+                    }
+                    else
+                    {
+                        // No tool in any nearby chest -> craft a basic starter tool and hold it visibly!
+                        string crafted = isWood ? "AxeStone" : "PickaxeAntler";
+                        if (isWood) { _equippedAxePrefab = crafted; _axeBorrowedFromChest = false; }
+                        else { _equippedPickaxePrefab = crafted; _pickaxeBorrowedFromChest = false; }
+                        EquipVisualTool(crafted);
+                        QoLPlugin.ShowHudMessagePublic($"[{GetName()}] No {(isWood ? "axe" : "pickaxe")} in chests — crafted a {(isWood ? "Stone Axe" : "Antler Pickaxe")}!");
+                        return;
+                    }
+                }
+
+                if (_pendingToolChest != null && _pendingToolChest.gameObject)
+                {
+                    float dChest = FlatDist(bPos, _pendingToolChest.transform.position);
+                    if (dChest > 2.5f)
+                    {
+                        MoveBuddyTo(dt, _pendingToolChest.transform.position, 2.0f, true);
+                        return;
+                    }
+                    _baseAiStopMovingMethod?.Invoke(_buddyBaseAi, null);
+                    bool took = QoLPlugin.TakeToolFromChestPublic(_pendingToolChest, _pendingToolPrefab);
+                    string finalTool = took ? _pendingToolPrefab : (isWood ? "AxeStone" : "PickaxeAntler");
+                    if (isWood) { _equippedAxePrefab = finalTool; _axeBorrowedFromChest = took; }
+                    else { _equippedPickaxePrefab = finalTool; _pickaxeBorrowedFromChest = took; }
+                    EquipVisualTool(finalTool);
+                    QoLPlugin.ShowHudMessagePublic(took
+                        ? $"[{GetName()}] Grabbed {_pendingToolDisplay} from chest!"
+                        : $"[{GetName()}] Crafted a {(isWood ? "Stone Axe" : "Antler Pickaxe")}!");
+                    _pendingToolChest = null;
+                    return;
+                }
+            }
+
+            EquipVisualTool(currentTool);
             int targetAmt = Math.Max(5, _activeTask.Amount);
             int have = isWood
                 ? GetBagCount("Wood") + GetBagCount("FineWood") + GetBagCount("CoreWood")

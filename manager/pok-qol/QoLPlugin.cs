@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.5.3")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.5.4")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -1601,6 +1601,110 @@ namespace POKValheimQoL
             if (dropOff != null) return dropOff;
 
             return allNearby.FirstOrDefault(c => InventoryHasEmptySlot(GetContainerInventory(c)));
+        }
+
+        // Finds the nearest chest containing a real Axe or Pickaxe (returns chest + prefabName + displayName)
+        public static bool FindBestToolChestPublic(
+            Vector3 origin,
+            float radius,
+            bool wantAxe,
+            out Component foundChest,
+            out string foundPrefabName,
+            out string foundDisplayName
+        )
+        {
+            foundChest = null;
+            foundPrefabName = null;
+            foundDisplayName = null;
+
+            string[] axePrefs = { "AxeBlackMetal", "AxeIron", "AxeBronze", "AxeFlint", "AxeStone" };
+            string[] pickPrefs = { "PickaxeIron", "PickaxeBronze", "PickaxeAntler" };
+            string[] searchList = wantAxe ? axePrefs : pickPrefs;
+
+            var chests = FindNearbyContainers(origin, radius)
+                .OrderBy(c => (c.transform.position - origin).sqrMagnitude)
+                .ToList();
+
+            foreach (string wanted in searchList)
+            {
+                foreach (var chest in chests)
+                {
+                    var inv = GetContainerInventory(chest);
+                    var items = _invGetAllItemsMethod?.Invoke(inv, null) as IEnumerable;
+                    if (items == null) continue;
+                    foreach (var item in items)
+                    {
+                        var dropPrefab = item.GetType().GetField("m_dropPrefab")?.GetValue(item) as GameObject;
+                        string pname = dropPrefab != null ? dropPrefab.name : "";
+                        if (string.Equals(pname, wanted, StringComparison.OrdinalIgnoreCase))
+                        {
+                            foundChest = chest;
+                            foundPrefabName = pname;
+                            foundDisplayName = GetLocalizedItemName(item);
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        // Removes 1 copy of prefabName from the chest (multiplayer ZDO-safe) so Buddy truly holds it
+        public static bool TakeToolFromChestPublic(Component chest, string prefabName)
+        {
+            if (chest == null || string.IsNullOrEmpty(prefabName) || _invRemoveItemDataMethod == null) return false;
+            var inv = GetContainerInventory(chest);
+            var items = _invGetAllItemsMethod?.Invoke(inv, null) as IEnumerable;
+            if (inv == null || items == null) return false;
+
+            object match = null;
+            foreach (var item in items)
+            {
+                var dropPrefab = item.GetType().GetField("m_dropPrefab")?.GetValue(item) as GameObject;
+                if (dropPrefab != null && string.Equals(dropPrefab.name, prefabName, StringComparison.OrdinalIgnoreCase))
+                {
+                    match = item;
+                    break;
+                }
+            }
+            if (match == null) return false;
+
+            bool removed = _invRemoveItemDataMethod.Invoke(inv, new[] { match }) is bool b && b;
+            if (removed)
+            {
+                SaveContainer(chest);
+                _cacheExpiresAt = -1f;
+            }
+            return removed;
+        }
+
+        // Safely returns a grabbed tool to the nearest chest (or drops it at Buddy's feet if all chests are full)
+        public static void ReturnToolSafelyPublic(Vector3 pos, string prefabName)
+        {
+            if (string.IsNullOrEmpty(prefabName)) return;
+            try
+            {
+                var znetType = AccessTools.TypeByName("ZNetScene");
+                var znet = znetType?.GetProperty("instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+                var getPrefab = znetType?.GetMethod("GetPrefab", new[] { typeof(string) });
+                var prefab = (znet != null && getPrefab != null) ? getPrefab.Invoke(znet, new object[] { prefabName }) as GameObject : null;
+                if (prefab == null) return;
+
+                var chest = FindBestBuddyDepositChestPublic(pos, 60f, "Tools");
+                if (chest != null && _invAddItemPrefabMethod != null)
+                {
+                    var dstInv = GetContainerInventory(chest);
+                    if (dstInv != null && _invAddItemPrefabMethod.Invoke(dstInv, new object[] { prefab, 1 }) != null)
+                    {
+                        SaveContainer(chest);
+                        _cacheExpiresAt = -1f;
+                        return;
+                    }
+                }
+                // Fallback: drop on ground so the player NEVER loses their tool
+                UnityEngine.Object.Instantiate(prefab, pos + Vector3.up * 0.8f, Quaternion.identity);
+            }
+            catch { }
         }
 
         public static int DepositBuddyBagToChestPublic(Component chest, Dictionary<string, int> bag)
