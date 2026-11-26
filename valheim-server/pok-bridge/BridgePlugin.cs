@@ -282,39 +282,21 @@ namespace POKValheimBridge
         private string BroadcastHudMessage(int messageType, string message)
         {
             var rpc = GetSingleton("ZRoutedRpc");
-            var znet = GetSingleton("ZNet");
-            if (rpc == null || znet == null) return "ZRoutedRpc/ZNet not initialized yet.";
+            if (rpc == null) return "ZRoutedRpc not initialized yet (world still loading).";
 
-            var zdoidType = FindGameType("ZDOID");
-            if (zdoidType == null) return "Could not locate ZDOID type.";
+            var rpcType = rpc.GetType();
+            var everybodyField = rpcType.GetField("Everybody", BindingFlags.Public | BindingFlags.Static);
+            long everybody = everybodyField != null ? Convert.ToInt64(everybodyField.GetValue(null)) : 0L;
 
-            // Valheim's Player.Awake registers m_nview.Register<int, string>("Message", RPC_Message)
-            // on each player's character ZDOID (peer.m_characterID).
-            var invokeMethod = rpc.GetType().GetMethod(
+            var method = rpcType.GetMethod(
                 "InvokeRoutedRPC",
-                new[] { typeof(long), zdoidType, typeof(string), typeof(object[]) }
+                new[] { typeof(long), typeof(string), typeof(object[]) }
             );
-            if (invokeMethod == null) return "Could not locate ZRoutedRpc.InvokeRoutedRPC(long, ZDOID, string, object[]).";
+            if (method == null) return "Could not locate ZRoutedRpc.InvokeRoutedRPC.";
 
-            var getPeers = znet.GetType().GetMethod("GetPeers", BindingFlags.Public | BindingFlags.Instance);
-            var peersObj = getPeers?.Invoke(znet, null) as IEnumerable;
-            if (peersObj == null) return "No peers list available.";
-
-            int sent = 0;
-            foreach (var peer in peersObj)
-            {
-                var pt = peer.GetType();
-                var uidObj = pt.GetField("m_uid")?.GetValue(peer);
-                var charIdObj = pt.GetField("m_characterID")?.GetValue(peer);
-                if (uidObj == null || charIdObj == null) continue;
-
-                long uid = Convert.ToInt64(uidObj);
-                invokeMethod.Invoke(rpc, new object[] { uid, charIdObj, "Message", new object[] { messageType, message } });
-                sent++;
-            }
-
-            Logger.LogInfo($"[POK-Bridge] Broadcast (type={messageType}) to {sent} player(s): {message}");
-            return $"Broadcast sent to {sent} online player(s): \"{message}\"";
+            method.Invoke(rpc, new object[] { everybody, "ShowMessage", new object[] { messageType, message } });
+            Logger.LogInfo($"[POK-Bridge] Broadcast (type={messageType}): {message}");
+            return $"Broadcast sent to all players: \"{message}\"";
         }
 
         private string GetPlayersWithLocations()
