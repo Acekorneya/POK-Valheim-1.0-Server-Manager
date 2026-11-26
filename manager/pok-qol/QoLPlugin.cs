@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.0")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.3.1")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -990,15 +990,16 @@ namespace POKValheimQoL
             }
         }
 
-        // Updates Crafting & Hammer UI requirement text: stops red flashing when chests have enough
-        // and displays "needed/total" (e.g. "1/240") using our 0.5s O(1) cache!
+        // Updates Crafting & Upgrade UI requirement text, stops red flashing, AND sets __result = true
+        // so the Upgrade / Craft button enables when nearby chests have enough materials!
         private static void InventoryGui_SetupRequirement_Postfix(
             Transform __0,
             object __1,
             object __2,
             bool __3,
             int __4,
-            object[] __args
+            object[] __args,
+            ref bool __result
         )
         {
             if (!EnableCraftFromChests.Value || __0 == null || __1 == null || __2 == null || _tmpTextType == null)
@@ -1025,14 +1026,22 @@ namespace POKValheimQoL
                 int total = _combinedItemCounts.TryGetValue(sharedName, out int c) ? c : 0;
 
                 var amountTf = __0.Find("res_amount");
-                if (amountTf == null) return;
-                var tmpComp = amountTf.GetComponent(_tmpTextType);
-                if (tmpComp == null) return;
+                if (amountTf != null)
+                {
+                    var tmpComp = amountTf.GetComponent(_tmpTextType);
+                    if (tmpComp != null)
+                    {
+                        _tmpTextProp?.SetValue(tmpComp, $"{needed}/{total}");
+                        if (total >= needed)
+                        {
+                            _tmpColorProp?.SetValue(tmpComp, Color.white);
+                        }
+                    }
+                }
 
-                _tmpTextProp?.SetValue(tmpComp, $"{needed}/{total}");
                 if (total >= needed)
                 {
-                    _tmpColorProp?.SetValue(tmpComp, Color.white);
+                    __result = true;
                 }
             }
             catch { }
