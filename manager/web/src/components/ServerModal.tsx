@@ -150,6 +150,9 @@ export function ServerModal({ existing, suggestedPort, onClose, onSave }: Server
   const [backupLong, setBackupLong] = useState(existing?.backupLong ?? 43200);
   const [updateOnStart, setUpdateOnStart] = useState(existing?.updateOnStart ?? true);
   const [autoStart, setAutoStart] = useState(existing?.autoStart ?? true);
+  const [rconEnabled, setRconEnabled] = useState(existing?.rconEnabled ?? false);
+  const [rconPort, setRconPort] = useState(existing?.rconPort ?? (existing?.port || suggestedPort) + 2);
+  const [rconPassword, setRconPassword] = useState(existing?.rconPassword || '');
   const [extraArgs, setExtraArgs] = useState(existing?.extraArgs || '');
   const [modifiers, setModifiers] = useState<WorldModifiers>(
     existing?.modifiers ? { ...emptyModifiers, ...existing.modifiers } : { ...emptyModifiers }
@@ -207,6 +210,9 @@ export function ServerModal({ existing, suggestedPort, onClose, onSave }: Server
         backupLong: Number(backupLong),
         updateOnStart,
         autoStart,
+        rconEnabled,
+        rconPort: Number(rconPort),
+        rconPassword,
         modifiers,
         extraArgs,
         startImmediately,
@@ -425,6 +431,54 @@ export function ServerModal({ existing, suggestedPort, onClose, onSave }: Server
                       </div>
                     </div>
                   </label>
+                </div>
+
+                {/* Per-server RCON TCP port & password */}
+                <div className="rounded-xl bg-[#0b0f18] border border-slate-800 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-200">
+                        Enable RCON Port Mapping (Optional — for RCON Mods)
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        Maps a TCP RCON port on this container so you can send in-game chat &amp;
+                        admin commands from the Live Console.
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={rconEnabled}
+                      onChange={(e) => setRconEnabled(e.target.checked)}
+                      className="accent-amber-500"
+                    />
+                  </div>
+                  {rconEnabled && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-1">
+                          RCON TCP Port
+                        </label>
+                        <input
+                          type="number"
+                          value={rconPort}
+                          onChange={(e) => setRconPort(Number(e.target.value))}
+                          className="w-full rounded-lg bg-[#121826] border border-slate-700 px-3 py-1.5 text-xs font-mono-code text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-1">
+                          RCON Password (matches RCON mod config)
+                        </label>
+                        <input
+                          type="text"
+                          value={rconPassword}
+                          onChange={(e) => setRconPassword(e.target.value)}
+                          placeholder="Same password set in RCON .cfg"
+                          className="w-full rounded-lg bg-[#121826] border border-slate-700 px-3 py-1.5 text-xs font-mono-code text-slate-100"
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

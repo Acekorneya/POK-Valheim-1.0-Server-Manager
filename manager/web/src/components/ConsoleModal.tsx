@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { X, Terminal, Users, Save, RefreshCw } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { X, Terminal, Users, Save, RefreshCw, Send, Megaphone, Radio } from 'lucide-react';
 import { api, getToken } from '../api';
 import type { PlayerLists, ServerWithStatus } from '../types';
 
@@ -8,10 +8,24 @@ interface ConsoleModalProps {
   onClose: () => void;
 }
 
+const QUICK_RCON_CMDS = [
+  { label: 'Save World', cmd: 'save' },
+  { label: 'Players', cmd: 'list' },
+  { label: 'Info', cmd: 'info' },
+  { label: 'Help', cmd: 'help' },
+];
+
 export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
   const [tab, setTab] = useState<'logs' | 'lists'>('logs');
   const [lines, setLines] = useState<string[]>([]);
   const [connected, setConnected] = useState(false);
+
+  // RCON interactive bar state
+  const [rconInput, setRconInput] = useState('');
+  const [sendingRcon, setSendingRcon] = useState(false);
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [historyIdx, setHistoryIdx] = useState(-1);
+
   const [lists, setLists] = useState<PlayerLists>({
     adminlist: '',
     bannedlist: '',
@@ -57,6 +71,61 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
     api.getPlayerLists(server.id).then(setLists).catch(() => {});
   }, [server.id]);
 
+  const executeRcon = async (rawCommand: string) => {
+    const cmd = rawCommand.trim();
+    if (!cmd || sendingRcon) return;
+    setSendingRcon(true);
+    setLines((prev) => [...prev.slice(-600), `[RCON >] ${cmd}`]);
+    setCmdHistory((prev) => [cmd, ...prev.filter((c) => c !== cmd).slice(0, 30)]);
+    setHistoryIdx(-1);
+    try {
+      const res = await api.sendRcon(server.id, cmd);
+      const out = (res.output || '').trim();
+      setLines((prev) => [
+        ...prev.slice(-600),
+        out ? `[RCON <] ${out}` : '[RCON <] (command executed)',
+      ]);
+    } catch (err) {
+      setLines((prev) => [...prev.slice(-600), `[RCON ERROR] ${(err as Error).message}`]);
+    } finally {
+      setSendingRcon(false);
+    }
+  };
+
+  const handleRconSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!rconInput.trim()) return;
+    const toRun = rconInput;
+    setRconInput('');
+    executeRcon(toRun);
+  };
+
+  const handleRconKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowUp' && cmdHistory.length > 0) {
+      e.preventDefault();
+      const next = Math.min(cmdHistory.length - 1, historyIdx + 1);
+      setHistoryIdx(next);
+      setRconInput(cmdHistory[next]);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = historyIdx - 1;
+      if (next < 0) {
+        setHistoryIdx(-1);
+        setRconInput('');
+      } else {
+        setHistoryIdx(next);
+        setRconInput(cmdHistory[next]);
+      }
+    }
+  };
+
+  const handleQuickBroadcast = () => {
+    const msg = prompt('Enter announcement message to broadcast in-game via RCON (say):');
+    if (msg && msg.trim()) {
+      executeRcon(`say ${msg.trim()}`);
+    }
+  };
+
   const handleSaveLists = async () => {
     setSavingLists(true);
     setListMessage('');
@@ -73,7 +142,7 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-      <div className="w-full max-w-4xl h-[82vh] flex flex-col rounded-2xl bg-[#111622] border border-slate-700/80 shadow-2xl overflow-hidden">
+      <div className="w-full max-w-4xl h-[85vh] flex flex-col rounded-2xl bg-[#111622] border border-slate-700/80 shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-[#0d121d]">
           <div className="flex items-center gap-3">
@@ -82,6 +151,7 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
               <h2 className="text-sm font-semibold text-slate-100">{server.name}</h2>
               <p className="text-[11px] text-slate-400 font-mono-code">
                 {server.runtime.containerName} • World: {server.worldName} • Port {server.port}/udp
+                {server.rconEnabled ? ` • RCON ${server.rconPort}/tcp` : ''}
               </p>
             </div>
           </div>
@@ -96,7 +166,7 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                Live Console
+                Live Console &amp; RCON
               </button>
               <button
                 onClick={() => setTab('lists')}
@@ -130,13 +200,23 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
                 />
                 {connected ? 'Live stream connected' : 'Stream disconnected'}
               </span>
-              <button
-                onClick={() => setLines([])}
-                className="flex items-center gap-1 text-slate-400 hover:text-slate-200 cursor-pointer"
-              >
-                <RefreshCw className="w-3 h-3" /> Clear
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleQuickBroadcast}
+                  disabled={sendingRcon}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-[11px] font-medium cursor-pointer"
+                >
+                  <Megaphone className="w-3 h-3" /> Broadcast
+                </button>
+                <button
+                  onClick={() => setLines([])}
+                  className="flex items-center gap-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" /> Clear
+                </button>
+              </div>
             </div>
+
             <div className="flex-1 overflow-y-auto p-4 font-mono-code text-xs leading-relaxed text-slate-300 space-y-0.5">
               {lines.length === 0 ? (
                 <p className="text-slate-500 italic">Waiting for container log output...</p>
@@ -145,13 +225,17 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
                   <div
                     key={i}
                     className={`whitespace-pre-wrap break-all ${
-                      line.toLowerCase().includes('error')
+                      line.startsWith('[RCON ERROR]') || line.toLowerCase().includes('error')
                         ? 'text-rose-400'
-                        : line.toLowerCase().includes('join code')
-                          ? 'text-sky-300 font-semibold'
-                          : line.includes('[POK-Valheim')
-                            ? 'text-amber-300'
-                            : 'text-slate-300'
+                        : line.startsWith('[RCON >]')
+                          ? 'text-amber-300 font-semibold'
+                          : line.startsWith('[RCON <]')
+                            ? 'text-emerald-300'
+                            : line.toLowerCase().includes('join code')
+                              ? 'text-sky-300 font-semibold'
+                              : line.includes('[POK-Valheim')
+                                ? 'text-amber-300'
+                                : 'text-slate-300'
                     }`}
                   >
                     {line}
@@ -159,6 +243,52 @@ export function ConsoleModal({ server, onClose }: ConsoleModalProps) {
                 ))
               )}
               <div ref={logEndRef} />
+            </div>
+
+            {/* Interactive RCON Command Bar */}
+            <div className="border-t border-slate-800 bg-[#0d121d] p-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="flex items-center gap-1 text-[11px] font-semibold text-slate-400 mr-1">
+                    <Radio className="w-3 h-3 text-amber-400" /> Quick RCON:
+                  </span>
+                  {QUICK_RCON_CMDS.map((q) => (
+                    <button
+                      key={q.cmd}
+                      type="button"
+                      disabled={sendingRcon}
+                      onClick={() => executeRcon(q.cmd)}
+                      className="px-2 py-0.5 rounded-md bg-slate-800/90 hover:bg-slate-700 border border-slate-700/70 text-[11px] text-slate-300 hover:text-amber-200 cursor-pointer disabled:opacity-40"
+                    >
+                      {q.label}
+                    </button>
+                  ))}
+                </div>
+                {!server.rconEnabled && (
+                  <span className="text-[11px] text-slate-500">
+                    Requires RCON mod (Mods tab) + RCON enabled in Server Settings
+                  </span>
+                )}
+              </div>
+
+              <form onSubmit={handleRconSubmit} className="flex gap-2">
+                <input
+                  type="text"
+                  value={rconInput}
+                  onChange={(e) => setRconInput(e.target.value)}
+                  onKeyDown={handleRconKeyDown}
+                  placeholder="Enter RCON command (e.g. say Server restarting in 5 mins, save, list, kick <name>)..."
+                  className="flex-1 rounded-xl bg-[#07090e] border border-slate-700/80 px-3.5 py-2 font-mono-code text-xs text-slate-100 focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  type="submit"
+                  disabled={sendingRcon || !rconInput.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-semibold text-xs cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {sendingRcon ? 'Sending...' : 'Send'}
+                </button>
+              </form>
             </div>
           </div>
         ) : (

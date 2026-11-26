@@ -147,6 +147,21 @@ class DockerService {
     const port1 = `${server.port}/udp`;
     const port2 = `${server.port + 1}/udp`;
 
+    const exposedPorts: Record<string, Record<string, never>> = {
+      [port1]: {},
+      [port2]: {},
+    };
+    const portBindings: Record<string, { HostPort: string }[]> = {
+      [port1]: [{ HostPort: String(server.port) }],
+      [port2]: [{ HostPort: String(server.port + 1) }],
+    };
+
+    if (server.rconEnabled && server.rconPort) {
+      const rconKey = `${server.rconPort}/tcp`;
+      exposedPorts[rconKey] = {};
+      portBindings[rconKey] = [{ HostPort: String(server.rconPort) }];
+    }
+
     const container = await this.docker.createContainer({
       name: this.getContainerName(server.id),
       Image: config.valheimImage,
@@ -158,10 +173,7 @@ class DockerService {
         'pok-valheim.server-id': server.id,
         'pok-valheim.server-name': server.name,
       },
-      ExposedPorts: {
-        [port1]: {},
-        [port2]: {},
-      },
+      ExposedPorts: exposedPorts,
       HostConfig: {
         RestartPolicy: {
           Name: server.autoStart ? 'unless-stopped' : 'no',
@@ -170,10 +182,7 @@ class DockerService {
           `${hostConfigDir}:/config`,
           `${config.gameFilesVolume}:/opt/valheim`,
         ],
-        PortBindings: {
-          [port1]: [{ HostPort: String(server.port) }],
-          [port2]: [{ HostPort: String(server.port + 1) }],
-        },
+        PortBindings: portBindings,
       },
     });
 

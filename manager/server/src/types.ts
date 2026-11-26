@@ -27,6 +27,9 @@ export interface ServerConfig {
   backupShort: number;
   backupLong: number;
   modsEnabled?: boolean;
+  rconEnabled?: boolean;
+  rconPort?: number;
+  rconPassword?: string;
   updateOnStart: boolean;
   autoStart: boolean;
   modifiers: WorldModifiers;

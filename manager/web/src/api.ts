@@ -87,6 +87,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(lists),
     }),
+  sendRcon: (id: string, command: string) =>
+    request<{ ok: boolean; output: string }>(`/api/servers/${id}/rcon`, {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    }),
 
   // Worlds
   listWorlds: () => request<{ worlds: WorldSaveInfo[] }>('/api/worlds'),

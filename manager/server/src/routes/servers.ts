@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { store } from '../store.js';
 import { dockerService } from '../dockerService.js';
 import { worldService } from '../worldService.js';
+import { sendRconCommand } from '../notificationService.js';
 import { getServerConfigDir } from '../config.js';
 import type { ServerConfig, ServerWithStatus, WorldModifiers } from '../types.js';
 
@@ -99,6 +100,10 @@ serversRouter.post('/', async (req, res) => {
       backupsCount: Number(body.backupsCount) || 4,
       backupShort: Number(body.backupShort) || 7200,
       backupLong: Number(body.backupLong) || 43200,
+      modsEnabled: Boolean(body.modsEnabled ?? false),
+      rconEnabled: Boolean(body.rconEnabled ?? false),
+      rconPort: Number(body.rconPort) || port + 2,
+      rconPassword: (body.rconPassword || '').trim(),
       updateOnStart: body.updateOnStart !== false,
       autoStart: body.autoStart !== false,
       modifiers: { ...defaultModifiers, ...(body.modifiers ?? {}) },
@@ -160,6 +165,10 @@ serversRouter.put('/:id', async (req, res) => {
       backupsCount: Number(body.backupsCount ?? existing.backupsCount),
       backupShort: Number(body.backupShort ?? existing.backupShort ?? 7200),
       backupLong: Number(body.backupLong ?? existing.backupLong ?? 43200),
+      modsEnabled: body.modsEnabled ?? existing.modsEnabled ?? false,
+      rconEnabled: body.rconEnabled ?? existing.rconEnabled ?? false,
+      rconPort: Number(body.rconPort ?? existing.rconPort ?? port + 2),
+      rconPassword: (body.rconPassword ?? existing.rconPassword ?? '').trim(),
       updateOnStart: body.updateOnStart ?? existing.updateOnStart,
       autoStart: body.autoStart ?? existing.autoStart,
       modifiers: { ...existing.modifiers, ...(body.modifiers ?? {}) },
@@ -296,5 +305,43 @@ serversRouter.put('/:id/lists', (req, res) => {
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+serversRouter.post('/:id/rcon', async (req, res) => {
+  try {
+    const server = store.getServer(req.params.id);
+    if (!server) {
+      res.status(404).json({ error: 'Server not found' });
+      return;
+    }
+    const { command } = req.body as { command?: string };
+    if (!command || !command.trim()) {
+      res.status(400).json({ error: 'RCON command is required' });
+      return;
+    }
+
+    const globalUpd = store.getUpdatePolicy();
+    const usePerServer = Boolean(server.rconEnabled && server.rconPort);
+    const host = usePerServer
+      ? process.env.PUBLIC_HOST || '127.0.0.1'
+      : globalUpd.rconHost || '127.0.0.1';
+    const port = usePerServer ? Number(server.rconPort) : Number(globalUpd.rconPort);
+    const password = usePerServer ? server.rconPassword || '' : globalUpd.rconPassword || '';
+
+    if (!usePerServer && !globalUpd.rconEnabled) {
+      res.status(400).json({
+        error:
+          'RCON is not enabled on this realm. Install a Valheim RCON BepInEx plugin from the Mods tab and enable RCON in Server Settings (or Updates tab).',
+      });
+      return;
+    }
+
+    const output = await sendRconCommand({ host, port, password }, command.trim());
+    store.addActivity('server', `RCON on "${server.name}": ${command.trim()}`);
+    store.save();
+    res.json({ ok: true, output });
+  } catch (err) {
+    res.status(502).json({ error: (err as Error).message });
   }
 });
