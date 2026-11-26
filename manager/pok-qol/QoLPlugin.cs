@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.0")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.1")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -127,65 +127,54 @@ namespace POKValheimQoL
             }
         }
 
-        private void ApplyPatches()
+        private void SafePatch(string label, MethodBase target, HarmonyMethod prefix = null, HarmonyMethod postfix = null)
         {
+            if (target == null)
+            {
+                Logger.LogWarning($"[POK-QoL] Target method not found for {label}; skipping.");
+                return;
+            }
             try
             {
-                // 0. Register craftable POK Drop-Off Chest prefab in ZNetScene
-                var znetAwake = AccessTools.Method("ZNetScene:Awake");
-                if (znetAwake != null)
-                {
-                    _harmony.Patch(znetAwake, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(ZNetScene_Awake_Postfix)));
-                }
-
-                // Track containers & signs without ever calling FindObjectsOfType
-                var contAwake = AccessTools.Method("Container:Awake");
-                if (contAwake != null)
-                    _harmony.Patch(contAwake, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_Awake_Postfix)));
-
-                var contDestroy = AccessTools.Method("Container:OnDestroyed");
-                if (contDestroy != null)
-                    _harmony.Patch(contDestroy, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_Destroy_Postfix)));
-
-                var signAwake = AccessTools.Method("Sign:Awake");
-                if (signAwake != null)
-                    _harmony.Patch(signAwake, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Sign_Awake_Postfix)));
-
-                // 1. Drop-off chest auto-sort when closing a container
-                var setInUse = AccessTools.Method("Container:SetInUse");
-                if (setInUse != null)
-                {
-                    _harmony.Patch(setInUse, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_SetInUse_Postfix)));
-                }
-
-                // 2. Craft & Build from nearby chests (Zero-Lag + Strict Crafting Station checks)
-                var haveReqItems = AccessTools.Method("Player:HaveRequirementItems");
-                if (haveReqItems != null)
-                {
-                    _harmony.Patch(haveReqItems, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirementItems_Postfix)));
-                }
-
-                var pieceType = AccessTools.TypeByName("Piece");
-                var reqModeType = AccessTools.TypeByName("Player+RequirementMode");
-                if (pieceType != null && reqModeType != null)
-                {
-                    var haveReqPiece = AccessTools.Method("Player:HaveRequirements", new[] { pieceType, reqModeType });
-                    if (haveReqPiece != null)
-                    {
-                        _harmony.Patch(haveReqPiece, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirements_Piece_Postfix)));
-                    }
-                }
-
-                var consumeRes = AccessTools.Method("Player:ConsumeResources");
-                if (consumeRes != null)
-                {
-                    _harmony.Patch(consumeRes, prefix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_ConsumeResources_Prefix)));
-                }
+                _harmony.Patch(target, prefix: prefix, postfix: postfix);
             }
             catch (Exception ex)
             {
-                Logger.LogWarning($"[POK-QoL] Patch setup warning: {ex.Message}");
+                Logger.LogWarning($"[POK-QoL] Failed to patch {label}: {ex.Message}");
             }
+        }
+
+        private void ApplyPatches()
+        {
+            SafePatch("ZNetScene:Awake", AccessTools.Method("ZNetScene:Awake"),
+                postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(ZNetScene_Awake_Postfix)));
+
+            SafePatch("Container:Awake", AccessTools.Method("Container:Awake"),
+                postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_Awake_Postfix)));
+
+            SafePatch("Container:OnDestroyed", AccessTools.Method("Container:OnDestroyed"),
+                postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_Destroy_Postfix)));
+
+            SafePatch("Sign:Awake", AccessTools.Method("Sign:Awake"),
+                postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Sign_Awake_Postfix)));
+
+            SafePatch("Container:SetInUse", AccessTools.Method("Container:SetInUse"),
+                postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_SetInUse_Postfix)));
+
+            SafePatch("Player:HaveRequirementItems", AccessTools.Method("Player:HaveRequirementItems"),
+                postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirementItems_Postfix)));
+
+            var pieceType = AccessTools.TypeByName("Piece");
+            var reqModeType = AccessTools.TypeByName("Player+RequirementMode");
+            if (pieceType != null && reqModeType != null)
+            {
+                SafePatch("Player:HaveRequirements(Piece)",
+                    AccessTools.Method("Player:HaveRequirements", new[] { pieceType, reqModeType }),
+                    postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirements_Piece_Postfix)));
+            }
+
+            SafePatch("Player:ConsumeResources", AccessTools.Method("Player:ConsumeResources"),
+                prefix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_ConsumeResources_Prefix)));
         }
 
         private static void Container_Awake_Postfix(object __instance)
@@ -632,7 +621,7 @@ namespace POKValheimQoL
         // 3. CRAFT & BUILD FROM NEARBY CHESTS (Zero-Lag + Strict Station Checks)
         // =========================================================================
 
-        private static bool HasAllResourcesWithCache(Component player, IEnumerable reqs, int qualityLevel)
+        private static bool HasAllResourcesWithCache(Component player, IEnumerable reqs, int qualityLevel, int amountMultiplier = 1)
         {
             var playerInv = _playerGetInvMethod?.Invoke(player, null);
             if (playerInv == null) return false;
@@ -644,6 +633,7 @@ namespace POKValheimQoL
                            ?? playerInv.GetType().GetMethod("CountItems", new[] { typeof(string), typeof(int) });
             if (countMethod == null) return false;
             int pLen = countMethod.GetParameters().Length;
+            int mult = Math.Max(1, amountMultiplier);
 
             foreach (var req in reqs)
             {
@@ -654,7 +644,7 @@ namespace POKValheimQoL
                 if (string.IsNullOrEmpty(sharedName)) continue;
 
                 var getAmt = req.GetType().GetMethod("GetAmount", new[] { typeof(int) });
-                int needed = getAmt != null ? (int)getAmt.Invoke(req, new object[] { qualityLevel }) : 0;
+                int needed = (getAmt != null ? (int)getAmt.Invoke(req, new object[] { qualityLevel }) : 0) * mult;
                 if (needed <= 0) continue;
 
                 var args = pLen == 3 ? new object[] { sharedName, -1, true } : new object[] { sharedName, -1 };
@@ -669,21 +659,21 @@ namespace POKValheimQoL
 
         private static void Player_HaveRequirements_Piece_Postfix(
             object __instance,
-            object piece,
-            object mode,
+            object __0,
+            object __1,
             ref bool __result
         )
         {
+            var piece = __0;
+            var mode = __1;
             if (__result || !EnableCraftFromChests.Value || piece == null) return;
             try
             {
-                // ONLY apply when mode == CanBuild (enum value 0), NEVER override IsKnown/CanAlmostBuild
                 if (mode != null && Convert.ToInt32(mode) != 0) return;
 
                 var player = __instance as Component;
                 if (player == null) return;
 
-                // STRICT CRAFTING STATION CHECK (Workbench, Forge, Stonecutter, Artisan Table, etc.)
                 var station = piece.GetType().GetField("m_craftingStation")?.GetValue(piece);
                 if (station != null)
                 {
@@ -704,7 +694,7 @@ namespace POKValheimQoL
                 var reqs = piece.GetType().GetField("m_resources")?.GetValue(piece) as IEnumerable;
                 if (reqs == null) return;
 
-                if (HasAllResourcesWithCache(player, reqs, 1))
+                if (HasAllResourcesWithCache(player, reqs, 1, 1))
                 {
                     __result = true;
                 }
@@ -714,12 +704,18 @@ namespace POKValheimQoL
 
         private static void Player_HaveRequirementItems_Postfix(
             object __instance,
-            object recipe,
-            bool discover,
-            int qualityLevel,
+            object __0,
+            bool __1,
+            int __2,
+            object[] __args,
             ref bool __result
         )
         {
+            var recipe = __0;
+            bool discover = __1;
+            int qualityLevel = __2;
+            int amount = (__args != null && __args.Length > 3 && __args[3] is int a) ? a : 1;
+
             if (__result || discover || !EnableCraftFromChests.Value || recipe == null) return;
             try
             {
@@ -729,7 +725,7 @@ namespace POKValheimQoL
                 var reqs = recipe.GetType().GetField("m_resources")?.GetValue(recipe) as IEnumerable;
                 if (reqs == null) return;
 
-                if (HasAllResourcesWithCache(player, reqs, qualityLevel))
+                if (HasAllResourcesWithCache(player, reqs, qualityLevel, amount))
                 {
                     __result = true;
                 }
@@ -737,8 +733,11 @@ namespace POKValheimQoL
             catch { }
         }
 
-        private static void Player_ConsumeResources_Prefix(object __instance, IEnumerable requirements, int qualityLevel)
+        private static void Player_ConsumeResources_Prefix(object __instance, object __0, int __1, object[] __args)
         {
+            var requirements = __0 as IEnumerable;
+            int qualityLevel = __1;
+            int amount = (__args != null && __args.Length > 3 && __args[3] is int a) ? Math.Max(1, a) : 1;
             if (!EnableCraftFromChests.Value || requirements == null) return;
             try
             {
@@ -779,7 +778,7 @@ namespace POKValheimQoL
                     if (string.IsNullOrEmpty(sharedName)) continue;
 
                     var getAmt = req.GetType().GetMethod("GetAmount", new[] { typeof(int) });
-                    int needed = getAmt != null ? (int)getAmt.Invoke(req, new object[] { qualityLevel }) : 0;
+                    int needed = (getAmt != null ? (int)getAmt.Invoke(req, new object[] { qualityLevel }) : 0) * amount;
                     if (needed <= 0) continue;
 
                     int inPlayer = CountIn(playerInv, sharedName);
