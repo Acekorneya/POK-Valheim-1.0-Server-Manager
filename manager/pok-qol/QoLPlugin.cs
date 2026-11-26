@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.1.0")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.2.0")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -30,6 +30,27 @@ namespace POKValheimQoL
         private Harmony _harmony;
         private static QoLPlugin _instance;
         private static GameObject _dropOffPrefab;
+
+        // Fast tracked registries (eliminates Unity FindObjectsOfType lag!)
+        private static readonly HashSet<Component> _trackedContainers = new HashSet<Component>();
+        private static readonly HashSet<Component> _trackedSigns = new HashSet<Component>();
+
+        // Cached reflection members (resolved once)
+        private static Type _playerType;
+        private static Type _containerType;
+        private static Type _signType;
+        private static FieldInfo _localPlayerField;
+        private static FieldInfo _containerNviewField;
+        private static MethodInfo _containerGetInvMethod;
+        private static MethodInfo _containerIsInUseMethod;
+        private static MethodInfo _containerSaveMethod;
+        private static MethodInfo _signGetTextMethod;
+        private static MethodInfo _playerGetInvMethod;
+
+        // 0.35s nearby chest item-count cache so Hammer UI runs at 0ms overhead
+        private static float _cacheExpiresAt = -1f;
+        private static Vector3 _cacheOrigin;
+        private static readonly Dictionary<string, int> _nearbyItemCounts = new Dictionary<string, int>();
 
         private void Awake()
         {
@@ -56,18 +77,38 @@ namespace POKValheimQoL
                 "Key combined with LeftAlt to quick-stack inventory to nearby chests.");
 
             EnableCraftFromChests = Config.Bind("3. Craft & Build From Chests", "Enabled", true,
-                "Automatically count and pull crafting/building materials from nearby chests.");
+                "Automatically count and pull crafting/building materials from nearby chests (respects all crafting station requirements).");
             CraftRadius = Config.Bind("3. Craft & Build From Chests", "RadiusMeters", 15f,
                 "Radius (in meters) to pull crafting and building materials from nearby chests.");
 
+            CacheReflection();
             _harmony = new Harmony("com.pok.valheim.qol");
             ApplyPatches();
-            Logger.LogInfo("[POK-QoL] v1.1.0 Loaded! Craftable POK Drop-Off Chest (FineWood + Copper), Alt+G Quick-Stack, Craft From Chests.");
+            Logger.LogInfo("[POK-QoL] v1.2.0 Loaded! Zero-lag cached containers, strict station checks, craftable POK Drop-Off Chest.");
         }
 
         private void OnDestroy()
         {
             try { _harmony?.UnpatchSelf(); } catch { }
+            _trackedContainers.Clear();
+            _trackedSigns.Clear();
+        }
+
+        private static void CacheReflection()
+        {
+            _playerType = AccessTools.TypeByName("Player");
+            _containerType = AccessTools.TypeByName("Container");
+            _signType = AccessTools.TypeByName("Sign");
+
+            _localPlayerField = _playerType?.GetField("m_localPlayer", BindingFlags.Public | BindingFlags.Static);
+            _playerGetInvMethod = _playerType?.GetMethod("GetInventory");
+
+            _containerNviewField = _containerType?.GetField("m_nview", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+            _containerGetInvMethod = _containerType?.GetMethod("GetInventory");
+            _containerIsInUseMethod = _containerType?.GetMethod("IsInUse");
+            _containerSaveMethod = _containerType?.GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+
+            _signGetTextMethod = _signType?.GetMethod("GetText");
         }
 
         private void Update()
@@ -97,6 +138,19 @@ namespace POKValheimQoL
                     _harmony.Patch(znetAwake, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(ZNetScene_Awake_Postfix)));
                 }
 
+                // Track containers & signs without ever calling FindObjectsOfType
+                var contAwake = AccessTools.Method("Container:Awake");
+                if (contAwake != null)
+                    _harmony.Patch(contAwake, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_Awake_Postfix)));
+
+                var contDestroy = AccessTools.Method("Container:OnDestroyed");
+                if (contDestroy != null)
+                    _harmony.Patch(contDestroy, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_Destroy_Postfix)));
+
+                var signAwake = AccessTools.Method("Sign:Awake");
+                if (signAwake != null)
+                    _harmony.Patch(signAwake, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Sign_Awake_Postfix)));
+
                 // 1. Drop-off chest auto-sort when closing a container
                 var setInUse = AccessTools.Method("Container:SetInUse");
                 if (setInUse != null)
@@ -104,17 +158,22 @@ namespace POKValheimQoL
                     _harmony.Patch(setInUse, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Container_SetInUse_Postfix)));
                 }
 
-                // 2. Craft & Build from nearby chests
-                var haveReq = AccessTools.Method("Player:HaveRequirements", new[] { AccessTools.TypeByName("Piece"), AccessTools.TypeByName("Player+RequirementMode") });
-                if (haveReq != null)
+                // 2. Craft & Build from nearby chests (Zero-Lag + Strict Crafting Station checks)
+                var haveReqItems = AccessTools.Method("Player:HaveRequirementItems");
+                if (haveReqItems != null)
                 {
-                    _harmony.Patch(haveReq, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirements_Piece_Postfix)));
+                    _harmony.Patch(haveReqItems, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirementItems_Postfix)));
                 }
 
-                var haveReqRecipe = AccessTools.Method("Player:HaveRequirements", new[] { AccessTools.TypeByName("Recipe"), typeof(bool), typeof(int) });
-                if (haveReqRecipe != null)
+                var pieceType = AccessTools.TypeByName("Piece");
+                var reqModeType = AccessTools.TypeByName("Player+RequirementMode");
+                if (pieceType != null && reqModeType != null)
                 {
-                    _harmony.Patch(haveReqRecipe, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirements_Recipe_Postfix)));
+                    var haveReqPiece = AccessTools.Method("Player:HaveRequirements", new[] { pieceType, reqModeType });
+                    if (haveReqPiece != null)
+                    {
+                        _harmony.Patch(haveReqPiece, postfix: new HarmonyMethod(typeof(QoLPlugin), nameof(Player_HaveRequirements_Piece_Postfix)));
+                    }
                 }
 
                 var consumeRes = AccessTools.Method("Player:ConsumeResources");
@@ -127,6 +186,29 @@ namespace POKValheimQoL
             {
                 Logger.LogWarning($"[POK-QoL] Patch setup warning: {ex.Message}");
             }
+        }
+
+        private static void Container_Awake_Postfix(object __instance)
+        {
+            if (__instance is Component c)
+            {
+                _trackedContainers.Add(c);
+                _cacheExpiresAt = -1f;
+            }
+        }
+
+        private static void Container_Destroy_Postfix(object __instance)
+        {
+            if (__instance is Component c)
+            {
+                _trackedContainers.Remove(c);
+                _cacheExpiresAt = -1f;
+            }
+        }
+
+        private static void Sign_Awake_Postfix(object __instance)
+        {
+            if (__instance is Component c) _trackedSigns.Add(c);
         }
 
         // =========================================================================
@@ -165,7 +247,6 @@ namespace POKValheimQoL
                     var woodChest = getPrefab.Invoke(__instance, new object[] { "piece_chest_wood" }) as GameObject;
                     if (woodChest == null) return;
 
-                    // Create hidden template container parent so instantiated prefab stays inactive
                     var holder = new GameObject("POK_PrefabHolder");
                     holder.SetActive(false);
                     UnityEngine.Object.DontDestroyOnLoad(holder);
@@ -173,7 +254,6 @@ namespace POKValheimQoL
                     _dropOffPrefab = UnityEngine.Object.Instantiate(woodChest, holder.transform, false);
                     _dropOffPrefab.name = DROPOFF_PREFAB_NAME;
 
-                    // Subtle warm copper/gold tint so players recognize the Drop-Off Chest visually
                     foreach (var renderer in _dropOffPrefab.GetComponentsInChildren<MeshRenderer>(true))
                     {
                         var mats = renderer.materials;
@@ -187,15 +267,12 @@ namespace POKValheimQoL
                         renderer.materials = mats;
                     }
 
-                    // Configure Container display name
-                    var containerType = AccessTools.TypeByName("Container");
-                    if (containerType != null)
+                    if (_containerType != null)
                     {
-                        var contComp = _dropOffPrefab.GetComponent(containerType);
+                        var contComp = _dropOffPrefab.GetComponent(_containerType);
                         contComp?.GetType().GetField("m_name")?.SetValue(contComp, "POK Drop-Off Chest");
                     }
 
-                    // Configure Piece metadata & crafting recipe (FineWood + Copper)
                     var pieceType = AccessTools.TypeByName("Piece");
                     var reqType = AccessTools.TypeByName("Piece+Requirement");
                     var itemDropType = AccessTools.TypeByName("ItemDrop");
@@ -238,7 +315,6 @@ namespace POKValheimQoL
                     }
                 }
 
-                // Register prefab in ZNetScene
                 int hash = GetStableHashCode(DROPOFF_PREFAB_NAME);
                 if (!prefabsList.Contains(_dropOffPrefab))
                 {
@@ -246,7 +322,6 @@ namespace POKValheimQoL
                 }
                 namedPrefabs[hash] = _dropOffPrefab;
 
-                // Register into Hammer PieceTable so players can build it
                 var hammerGo = getPrefab.Invoke(__instance, new object[] { "Hammer" }) as GameObject;
                 var itemDropT = AccessTools.TypeByName("ItemDrop");
                 if (hammerGo != null && itemDropT != null)
@@ -272,13 +347,12 @@ namespace POKValheimQoL
         }
 
         // =========================================================================
-        // HELPERS (Reflection-safe across Valheim versions)
+        // FAST CACHED HELPERS (Zero FindObjectsOfType!)
         // =========================================================================
 
         private static Component GetLocalPlayer()
         {
-            var pt = AccessTools.TypeByName("Player");
-            return pt?.GetField("m_localPlayer", BindingFlags.Public | BindingFlags.Static)?.GetValue(null) as Component;
+            return _localPlayerField?.GetValue(null) as Component;
         }
 
         private static void ShowHudMessage(string text)
@@ -299,25 +373,34 @@ namespace POKValheimQoL
         private static List<Component> FindNearbyContainers(Vector3 origin, float radius, Component exclude = null)
         {
             var result = new List<Component>();
-            var containerType = AccessTools.TypeByName("Container");
-            if (containerType == null) return result;
+            float rSq = radius * radius;
+            List<Component> dead = null;
 
-            var all = UnityEngine.Object.FindObjectsOfType(containerType);
-            foreach (var obj in all)
+            foreach (var comp in _trackedContainers)
             {
-                var comp = obj as Component;
-                if (comp == null || comp == exclude) continue;
-                if (Vector3.Distance(origin, comp.transform.position) > radius) continue;
+                if (comp == null || !comp.gameObject)
+                {
+                    if (dead == null) dead = new List<Component>();
+                    dead.Add(comp);
+                    continue;
+                }
+                if (comp == exclude) continue;
+                if ((comp.transform.position - origin).sqrMagnitude > rSq) continue;
 
-                var nview = comp.GetType().GetField("m_nview", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance)?.GetValue(comp);
+                var nview = _containerNviewField?.GetValue(comp);
                 if (nview == null) continue;
                 var isValid = nview.GetType().GetMethod("IsValid")?.Invoke(nview, null);
                 if (isValid is bool b && !b) continue;
 
-                var inUse = comp.GetType().GetMethod("IsInUse")?.Invoke(comp, null);
+                var inUse = _containerIsInUseMethod?.Invoke(comp, null);
                 if (inUse is bool u && u) continue;
 
                 result.Add(comp);
+            }
+
+            if (dead != null)
+            {
+                foreach (var d in dead) _trackedContainers.Remove(d);
             }
             return result;
         }
@@ -325,40 +408,37 @@ namespace POKValheimQoL
         private static bool IsDropOffContainer(Component container)
         {
             if (container == null) return false;
-
-            // 1. Crafted POK Drop-Off Chest prefab
             if (container.gameObject.name.StartsWith(DROPOFF_PREFAB_NAME, StringComparison.OrdinalIgnoreCase))
-            {
                 return true;
-            }
 
-            // 2. Optional [DROPOFF] sign fallback
             if (!AllowSignTagFallback.Value) return false;
             var tag = (DropOffTag.Value ?? "[DROPOFF]").Trim();
             if (string.IsNullOrEmpty(tag)) return false;
 
-            var signType = AccessTools.TypeByName("Sign");
-            if (signType == null) return false;
-
-            var signs = UnityEngine.Object.FindObjectsOfType(signType);
-            foreach (var obj in signs)
+            const float rSq = 3.2f * 3.2f;
+            List<Component> dead = null;
+            foreach (var signComp in _trackedSigns)
             {
-                var signComp = obj as Component;
-                if (signComp == null) continue;
-                if (Vector3.Distance(container.transform.position, signComp.transform.position) > 3.2f) continue;
-
-                var text = signComp.GetType().GetMethod("GetText")?.Invoke(signComp, null)?.ToString() ?? "";
-                if (text.IndexOf(tag, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (signComp == null || !signComp.gameObject)
                 {
-                    return true;
+                    if (dead == null) dead = new List<Component>();
+                    dead.Add(signComp);
+                    continue;
                 }
+                if ((container.transform.position - signComp.transform.position).sqrMagnitude > rSq) continue;
+                var text = _signGetTextMethod?.Invoke(signComp, null)?.ToString() ?? "";
+                if (text.IndexOf(tag, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            if (dead != null)
+            {
+                foreach (var d in dead) _trackedSigns.Remove(d);
             }
             return false;
         }
 
         private static object GetContainerInventory(Component container)
         {
-            return container.GetType().GetMethod("GetInventory")?.Invoke(container, null);
+            return _containerGetInvMethod?.Invoke(container, null);
         }
 
         private static List<object> GetAllItems(object inventory)
@@ -376,6 +456,12 @@ namespace POKValheimQoL
             return shared?.GetType().GetField("m_name")?.GetValue(shared)?.ToString() ?? "";
         }
 
+        private static int GetItemStack(object item)
+        {
+            var val = item?.GetType().GetField("m_stack")?.GetValue(item);
+            return val is int i ? i : 0;
+        }
+
         private static bool InventoryHasItemNamed(object inventory, string sharedName)
         {
             foreach (var item in GetAllItems(inventory))
@@ -387,11 +473,35 @@ namespace POKValheimQoL
 
         private static void SaveContainer(Component container)
         {
-            try
+            try { _containerSaveMethod?.Invoke(container, null); } catch { }
+        }
+
+        private static void RefreshNearbyItemCacheIfNeeded(Vector3 origin)
+        {
+            float now = Time.unscaledTime;
+            if (now < _cacheExpiresAt && (_cacheOrigin - origin).sqrMagnitude < 1.0f)
+                return;
+
+            _cacheExpiresAt = now + 0.35f;
+            _cacheOrigin = origin;
+            _nearbyItemCounts.Clear();
+
+            foreach (var chest in FindNearbyContainers(origin, CraftRadius.Value))
             {
-                container.GetType().GetMethod("Save", BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance)?.Invoke(container, null);
+                var inv = GetContainerInventory(chest);
+                if (inv == null) continue;
+                foreach (var item in GetAllItems(inv))
+                {
+                    string name = GetItemSharedName(item);
+                    if (string.IsNullOrEmpty(name)) continue;
+                    int stack = GetItemStack(item);
+                    if (stack <= 0) continue;
+                    if (_nearbyItemCounts.TryGetValue(name, out int cur))
+                        _nearbyItemCounts[name] = cur + stack;
+                    else
+                        _nearbyItemCounts[name] = stack;
+                }
             }
-            catch { }
         }
 
         // =========================================================================
@@ -400,6 +510,7 @@ namespace POKValheimQoL
 
         private static void Container_SetInUse_Postfix(object __instance, bool inUse)
         {
+            _cacheExpiresAt = -1f;
             if (inUse || !EnableDropOffSort.Value) return;
             try
             {
@@ -445,6 +556,7 @@ namespace POKValheimQoL
                 if (movedStacks > 0)
                 {
                     SaveContainer(container);
+                    _cacheExpiresAt = -1f;
                     ShowHudMessage($"[POK-QoL] Auto-sorted {movedStacks} stack(s) into nearby chests!");
                 }
             }
@@ -463,7 +575,7 @@ namespace POKValheimQoL
             var player = GetLocalPlayer();
             if (player == null) return;
 
-            var playerInv = player.GetType().GetMethod("GetInventory")?.Invoke(player, null);
+            var playerInv = _playerGetInvMethod?.Invoke(player, null);
             if (playerInv == null) return;
 
             var items = GetAllItems(playerInv).ToList();
@@ -510,42 +622,29 @@ namespace POKValheimQoL
                 }
             }
 
+            _cacheExpiresAt = -1f;
             ShowHudMessage(moved > 0
                 ? $"[POK-QoL] Quick-stacked {moved} stack(s) into nearby chests!"
                 : "[POK-QoL] No matching items to quick-stack.");
         }
 
         // =========================================================================
-        // 3. CRAFT & BUILD FROM NEARBY CHESTS
+        // 3. CRAFT & BUILD FROM NEARBY CHESTS (Zero-Lag + Strict Station Checks)
         // =========================================================================
 
-        private static int CountAcrossPlayerAndChests(Component player, string itemSharedName)
+        private static bool HasAllResourcesWithCache(Component player, IEnumerable reqs, int qualityLevel)
         {
-            var playerInv = player.GetType().GetMethod("GetInventory")?.Invoke(player, null);
-            int total = 0;
-            var countMethod = playerInv?.GetType().GetMethod("CountItems", new[] { typeof(string), typeof(int), typeof(bool) })
-                           ?? playerInv?.GetType().GetMethod("CountItems", new[] { typeof(string), typeof(int) });
+            var playerInv = _playerGetInvMethod?.Invoke(player, null);
+            if (playerInv == null) return false;
 
-            int CountIn(object inv)
-            {
-                if (inv == null || countMethod == null) return 0;
-                var pLen = countMethod.GetParameters().Length;
-                var args = pLen == 3 ? new object[] { itemSharedName, -1, true } : new object[] { itemSharedName, -1 };
-                var res = countMethod.Invoke(inv, args);
-                return res is int c ? c : 0;
-            }
+            RefreshNearbyItemCacheIfNeeded(player.transform.position);
+            if (_nearbyItemCounts.Count == 0) return false;
 
-            total += CountIn(playerInv);
-            foreach (var c in FindNearbyContainers(player.transform.position, CraftRadius.Value))
-            {
-                total += CountIn(GetContainerInventory(c));
-            }
-            return total;
-        }
+            var countMethod = playerInv.GetType().GetMethod("CountItems", new[] { typeof(string), typeof(int), typeof(bool) })
+                           ?? playerInv.GetType().GetMethod("CountItems", new[] { typeof(string), typeof(int) });
+            if (countMethod == null) return false;
+            int pLen = countMethod.GetParameters().Length;
 
-        private static bool CheckRequirementsWithChests(Component player, IEnumerable reqs, int qualityLevel)
-        {
-            if (reqs == null) return false;
             foreach (var req in reqs)
             {
                 var resItem = req.GetType().GetField("m_resItem")?.GetValue(req);
@@ -558,21 +657,54 @@ namespace POKValheimQoL
                 int needed = getAmt != null ? (int)getAmt.Invoke(req, new object[] { qualityLevel }) : 0;
                 if (needed <= 0) continue;
 
-                if (CountAcrossPlayerAndChests(player, sharedName) < needed)
-                    return false;
+                var args = pLen == 3 ? new object[] { sharedName, -1, true } : new object[] { sharedName, -1 };
+                int inPlayer = (int)countMethod.Invoke(playerInv, args);
+                int inChests = _nearbyItemCounts.TryGetValue(sharedName, out int c) ? c : 0;
+
+                if (inPlayer + inChests < needed) return false;
             }
+
             return true;
         }
 
-        private static void Player_HaveRequirements_Piece_Postfix(object __instance, object piece, ref bool __result)
+        private static void Player_HaveRequirements_Piece_Postfix(
+            object __instance,
+            object piece,
+            object mode,
+            ref bool __result
+        )
         {
-            if (__result || !EnableCraftFromChests.Value) return;
+            if (__result || !EnableCraftFromChests.Value || piece == null) return;
             try
             {
+                // ONLY apply when mode == CanBuild (enum value 0), NEVER override IsKnown/CanAlmostBuild
+                if (mode != null && Convert.ToInt32(mode) != 0) return;
+
                 var player = __instance as Component;
-                if (player == null || piece == null) return;
+                if (player == null) return;
+
+                // STRICT CRAFTING STATION CHECK (Workbench, Forge, Stonecutter, Artisan Table, etc.)
+                var station = piece.GetType().GetField("m_craftingStation")?.GetValue(piece);
+                if (station != null)
+                {
+                    var stationName = station.GetType().GetField("m_name")?.GetValue(station)?.ToString();
+                    var csType = AccessTools.TypeByName("CraftingStation");
+                    var haveStation = csType?.GetMethod("HaveBuildStationInRange", new[] { typeof(string), typeof(Vector3) });
+                    if (haveStation != null && !string.IsNullOrEmpty(stationName))
+                    {
+                        var inRange = haveStation.Invoke(null, new object[] { stationName, player.transform.position });
+                        if (!(inRange is bool ok) || !ok) return;
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+
                 var reqs = piece.GetType().GetField("m_resources")?.GetValue(piece) as IEnumerable;
-                if (CheckRequirementsWithChests(player, reqs, 1))
+                if (reqs == null) return;
+
+                if (HasAllResourcesWithCache(player, reqs, 1))
                 {
                     __result = true;
                 }
@@ -580,15 +712,24 @@ namespace POKValheimQoL
             catch { }
         }
 
-        private static void Player_HaveRequirements_Recipe_Postfix(object __instance, object recipe, int qualityLevel, ref bool __result)
+        private static void Player_HaveRequirementItems_Postfix(
+            object __instance,
+            object recipe,
+            bool discover,
+            int qualityLevel,
+            ref bool __result
+        )
         {
-            if (__result || !EnableCraftFromChests.Value) return;
+            if (__result || discover || !EnableCraftFromChests.Value || recipe == null) return;
             try
             {
                 var player = __instance as Component;
-                if (player == null || recipe == null) return;
+                if (player == null) return;
+
                 var reqs = recipe.GetType().GetField("m_resources")?.GetValue(recipe) as IEnumerable;
-                if (CheckRequirementsWithChests(player, reqs, qualityLevel))
+                if (reqs == null) return;
+
+                if (HasAllResourcesWithCache(player, reqs, qualityLevel))
                 {
                     __result = true;
                 }
@@ -603,7 +744,7 @@ namespace POKValheimQoL
             {
                 var player = __instance as Component;
                 if (player == null) return;
-                var playerInv = player.GetType().GetMethod("GetInventory")?.Invoke(player, null);
+                var playerInv = _playerGetInvMethod?.Invoke(player, null);
                 if (playerInv == null) return;
 
                 var countMethod = playerInv.GetType().GetMethod("CountItems", new[] { typeof(string), typeof(int), typeof(bool) })
@@ -660,6 +801,7 @@ namespace POKValheimQoL
                         missing -= take;
                     }
                 }
+                _cacheExpiresAt = -1f;
             }
             catch (Exception ex)
             {
