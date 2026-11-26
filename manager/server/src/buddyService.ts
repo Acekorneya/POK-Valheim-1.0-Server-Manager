@@ -232,7 +232,7 @@ class BuddyService {
       `- "repair" (walk to nearest Workbench/Forge and repair axe/pickaxe)`,
       `- "harvest_wood" (chop trees and collect wood; optional "amount" 5-150)`,
       `- "harvest_stone" (mine rocks/ore and collect stone/ore; optional "amount" 5-150)`,
-      `- "deposit" (put gathered wood/stone/ore into a nearby chest; optional "chestLabel" like "Wood", "Stone", "Ore")`,
+      `- "deposit" (put gathered wood/stone/ore into a nearby chest; optional "chestLabel" like "Wood", "Stone", "Ore", or "POK" for the POK Drop-Off Chest)`,
       `Smart rules: If axeDurability < 20 and player asks to chop/mine, put {"action":"repair"} first. If player asks to chop wood and put it in a box, queue harvest_wood then deposit.`,
     ].join('\n');
 

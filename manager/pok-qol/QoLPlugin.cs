@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace POKValheimQoL
 {
-    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.5.1")]
+    [BepInPlugin("com.pok.valheim.qol", "POK-Valheim QoL (Drop-Off Chest & Craft From Chests)", "1.5.2")]
     public class QoLPlugin : BaseUnityPlugin
     {
         public const string DROPOFF_PREFAB_NAME = "pok_dropoff_chest";
@@ -175,9 +175,15 @@ namespace POKValheimQoL
 
         private void OnDestroy()
         {
+            try { BuddyController.DismissBuddy(); } catch { }
             try { _harmony?.UnpatchSelf(); } catch { }
             _trackedContainers.Clear();
             _trackedSigns.Clear();
+        }
+
+        private void OnApplicationQuit()
+        {
+            try { BuddyController.DismissBuddy(); } catch { }
         }
 
         private static void CacheReflection()
@@ -1568,13 +1574,21 @@ namespace POKValheimQoL
                 .ToList();
             if (allNearby.Count == 0) return null;
 
+            string pref = (preferredLabel ?? "").Trim().ToLowerInvariant();
+            bool wantsPokDropOff = pref.Contains("pok") || pref.Contains("drop") || pref.Contains("sort");
+            if (wantsPokDropOff)
+            {
+                var pokChest = allNearby.FirstOrDefault(c => IsDropOffContainer(c) && InventoryHasEmptySlot(GetContainerInventory(c)));
+                if (pokChest != null) return pokChest;
+            }
+
             var labels = BuildChestSignLabels(allNearby);
-            if (!string.IsNullOrWhiteSpace(preferredLabel))
+            if (!string.IsNullOrWhiteSpace(pref))
             {
                 foreach (var c in allNearby)
                 {
                     if (labels.TryGetValue(c, out string lbl) &&
-                        lbl.IndexOf(preferredLabel.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+                        lbl.IndexOf(pref, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         var inv = GetContainerInventory(c);
                         if (inv != null && InventoryHasEmptySlot(inv)) return c;
@@ -1617,6 +1631,11 @@ namespace POKValheimQoL
             {
                 OrganizeInventoryGrid(dstInv);
                 SaveContainer(chest);
+                // If deposited into a POK Drop-Off Chest, immediately trigger auto-sort into matching chests!
+                if (IsDropOffContainer(chest))
+                {
+                    Container_SetInUse_Postfix(chest, false);
+                }
                 _cacheExpiresAt = -1f;
             }
             return deposited;

@@ -125,6 +125,22 @@ namespace POKValheimQoL
                 }
                 catch { }
             }
+
+            // Auto-delete Buddy cleanly when the player who summoned him logs out or disconnects
+            var gameLogout = AccessTools.Method("Game:Logout");
+            if (gameLogout != null)
+            {
+                try
+                {
+                    harmony.Patch(gameLogout, prefix: new HarmonyMethod(typeof(BuddyController), nameof(Game_Logout_Prefix)));
+                }
+                catch { }
+            }
+        }
+
+        private static void Game_Logout_Prefix()
+        {
+            DismissBuddy();
         }
 
         private static void CacheReflection()
@@ -274,6 +290,9 @@ namespace POKValheimQoL
 
             try
             {
+                // Clean up any leftover orphaned AI Buddy NPC from a previous session before spawning
+                CleanupOrphanBuddies(player.transform.position, 80f);
+
                 var znet = _znetSceneInstProp?.GetValue(null);
                 if (znet == null || _znetGetPrefabMethod == null) return;
 
@@ -320,19 +339,64 @@ namespace POKValheimQoL
             }
         }
 
-        public static void DismissBuddy()
+        private static void DestroyNetworkObject(GameObject go)
         {
-            if (_buddyGo != null)
+            if (go == null) return;
+            try
             {
+                var nviewType = AccessTools.TypeByName("ZNetView");
+                var nview = nviewType != null ? go.GetComponent(nviewType) : null;
+                if (nview != null)
+                {
+                    nviewType.GetMethod("ClaimOwnership", Type.EmptyTypes)?.Invoke(nview, null);
+                }
                 var znet = _znetSceneInstProp?.GetValue(null);
                 if (znet != null && _znetDestroyMethod != null)
-                    _znetDestroyMethod.Invoke(znet, new object[] { _buddyGo });
+                    _znetDestroyMethod.Invoke(znet, new object[] { go });
                 else
-                    UnityEngine.Object.Destroy(_buddyGo);
+                    UnityEngine.Object.Destroy(go);
+            }
+            catch { }
+        }
+
+        private static void CleanupOrphanBuddies(Vector3 origin, float radius)
+        {
+            if (_charType == null || _charNameField == null) return;
+            try
+            {
+                foreach (var col in Physics.OverlapSphere(origin, radius))
+                {
+                    if (col == null) continue;
+                    var ch = col.GetComponentInParent(_charType);
+                    if (ch == null || ch.gameObject == _buddyGo) continue;
+                    var name = _charNameField.GetValue(ch) as string ?? "";
+                    if (name.IndexOf("(AI Buddy)", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        DestroyNetworkObject(ch.gameObject);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        public static void DismissBuddy()
+        {
+            var player = QoLPlugin.GetLocalPlayerPublic();
+            if (_buddyGo != null)
+            {
+                DestroyNetworkObject(_buddyGo);
                 _buddyGo = null;
+                _buddyChar = null;
+                _buddyHumanoid = null;
+                _buddyBaseAi = null;
+                _buddyMonsterAi = null;
                 _taskQueue.Clear();
                 _activeTask = null;
                 QoLPlugin.ShowHudMessagePublic($"[{GetName()}] Dismissed. Press Alt+B anytime to summon again.");
+            }
+            if (player != null)
+            {
+                CleanupOrphanBuddies(player.transform.position, 80f);
             }
         }
 
