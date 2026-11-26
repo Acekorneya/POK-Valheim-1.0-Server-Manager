@@ -18,16 +18,34 @@ updatesRouter.post('/check', async (_req, res) => {
   }
 });
 
-updatesRouter.post('/run', (_req, res) => {
-  if (store.getUpdatePolicy().isUpdating) {
-    res.status(409).json({ error: 'An update is already running' });
+updatesRouter.post('/run', (req, res) => {
+  const current = store.getUpdatePolicy();
+  if (current.isUpdating || current.pendingState !== 'idle') {
+    res.status(409).json({ error: 'An update or countdown is already running' });
     return;
   }
-  // Run asynchronously so UI can poll progress logs
-  updateService.performUpdate().catch((err) => {
+  const forceImmediate = Boolean((req.body as { forceImmediate?: boolean })?.forceImmediate);
+  updateService.scheduleOrRunUpdate(forceImmediate).catch((err) => {
     console.error('[UpdatesRoute] Update run failed:', err);
   });
   res.json({ ok: true, started: true });
+});
+
+updatesRouter.post('/cancel', (_req, res) => {
+  updateService.cancelPendingUpdate();
+  res.json({ ok: true, policy: store.getUpdatePolicy() });
+});
+
+updatesRouter.post('/test-broadcast', async (req, res) => {
+  try {
+    const msg =
+      (req.body as { message?: string })?.message ||
+      'Test announcement from POK-Valheim Manager!';
+    const result = await updateService.broadcastNotice('POK-Valheim Test Notice', msg, 0x38bdf8);
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 updatesRouter.put('/policy', (req, res) => {

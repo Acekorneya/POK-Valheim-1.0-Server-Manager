@@ -129,10 +129,22 @@ export interface BackupPolicy {
   backupBeforeUpdate: boolean;
 }
 
+export type UpdatePlayerPolicy = 'wait_until_empty' | 'countdown' | 'immediate';
+
 export interface UpdatePolicy {
   autoCheckEnabled: boolean;
   checkCronExpression: string;
   autoUpdateEnabled: boolean;
+  whenPlayersOnline: UpdatePlayerPolicy;
+  countdownMinutes: number;
+  discordWebhookUrl: string;
+  rconEnabled: boolean;
+  rconHost: string;
+  rconPort: number;
+  rconPassword: string;
+  rconCommandTemplate: string;
+  pendingState: 'idle' | 'waiting_for_empty' | 'countdown' | 'updating';
+  pendingMessage: string | null;
   lastCheckedAt: string | null;
   lastUpdatedAt: string | null;
   installedBuildId: string | null;

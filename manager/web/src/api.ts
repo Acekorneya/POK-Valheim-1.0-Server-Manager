@@ -147,7 +147,17 @@ export const api = {
   // Updates
   getUpdateStatus: () => request<UpdatePolicy>('/api/updates'),
   checkUpdates: () => request<UpdatePolicy>('/api/updates/check', { method: 'POST' }),
-  runUpdate: () => request<{ ok: boolean }>('/api/updates/run', { method: 'POST' }),
+  runUpdate: (forceImmediate = false) =>
+    request<{ ok: boolean }>('/api/updates/run', {
+      method: 'POST',
+      body: JSON.stringify({ forceImmediate }),
+    }),
+  cancelUpdate: () => request<{ ok: boolean }>('/api/updates/cancel', { method: 'POST' }),
+  testBroadcast: (message?: string) =>
+    request<{ ok: boolean; result: { discord: string; rcon: string } }>(
+      '/api/updates/test-broadcast',
+      { method: 'POST', body: JSON.stringify({ message }) }
+    ),
   updateUpdatePolicy: (patch: Partial<UpdatePolicy>) =>
     request<UpdatePolicy>('/api/updates/policy', {
       method: 'PUT',
