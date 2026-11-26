@@ -17,8 +17,6 @@ import { worldsRouter } from './routes/worlds.js';
 import { backupsRouter } from './routes/backups.js';
 import { updatesRouter } from './routes/updates.js';
 import { modsRouter, publicModsRouter } from './routes/mods.js';
-import { buddyRouter, publicBuddyRouter } from './routes/buddy.js';
-import { buddyService } from './buddyService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,7 +26,6 @@ async function bootstrap() {
   await dockerService.init();
   backupService.init();
   updateService.init();
-  buddyService.init();
 
   const app = express();
   app.use(cors());
@@ -45,8 +42,6 @@ async function bootstrap() {
   app.use('/api/auth', authRouter);
   // Public shareable client modpack download link for players (no admin login needed)
   app.use('/api/mods/public', publicModsRouter);
-  // Public in-game AI Buddy brain endpoint (keeps API keys safely on the server)
-  app.use('/api/buddy/public', publicBuddyRouter);
 
   // Protected API routes
   app.use('/api/servers', requireAuth, serversRouter);
@@ -54,7 +49,6 @@ async function bootstrap() {
   app.use('/api/backups', requireAuth, backupsRouter);
   app.use('/api/updates', requireAuth, updatesRouter);
   app.use('/api/mods', requireAuth, modsRouter);
-  app.use('/api/buddy', requireAuth, buddyRouter);
 
   app.get('/api/activity', requireAuth, (_req, res) => {
     res.json({ activity: store.getState().activity });
