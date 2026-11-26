@@ -203,7 +203,8 @@ class UpdateService {
     for (const srv of store.getServers()) {
       if (srv.rconEnabled && srv.rconPort && srv.rconPassword) {
         try {
-          const host = config.publicHost || '127.0.0.1';
+          const containerIp = await dockerService.getContainerBridgeIp(srv.id);
+          const host = containerIp || config.publicHost || '127.0.0.1';
           const template = policy.rconCommandTemplate?.trim() || 'say {message}';
           const cmd = template.replace(/\{message\}/g, message);
           await sendRconCommand(

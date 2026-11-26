@@ -22,9 +22,45 @@ class DockerService {
       this.dockerAvailable = true;
       await this.resolveHostDataDir();
       await this.ensureGameFilesVolume();
+      await this.ensureSelfOnBridgeNetwork();
     } catch (err) {
       this.dockerAvailable = false;
       console.warn('[DockerService] Docker daemon not reachable at', config.dockerSocket, (err as Error).message);
+    }
+  }
+
+  /**
+   * Ensures the manager container is also attached to the default 'bridge' network
+   * so it can reach Valheim server containers directly by internal Docker IP (for RCON)
+   * without being blocked by host UFW firewalls.
+   */
+  private async ensureSelfOnBridgeNetwork(): Promise<void> {
+    try {
+      const hostname = os.hostname();
+      const selfContainer = this.docker.getContainer(hostname);
+      const info = await selfContainer.inspect();
+      if (!info.NetworkSettings?.Networks?.bridge) {
+        const bridgeNet = this.docker.getNetwork('bridge');
+        await bridgeNet.connect({ Container: info.Id });
+        console.log('[DockerService] Connected manager container to Docker bridge network for internal RCON.');
+      }
+    } catch {
+      // Running outside Docker or already connected
+    }
+  }
+
+  async getContainerBridgeIp(serverId: string): Promise<string | null> {
+    if (!this.dockerAvailable) return null;
+    const container = await this.findContainer(serverId);
+    if (!container) return null;
+    try {
+      const info = await container.inspect();
+      const nets = info.NetworkSettings?.Networks;
+      if (nets?.bridge?.IPAddress) return nets.bridge.IPAddress;
+      const firstNet = nets ? Object.values(nets).find((n) => n.IPAddress) : null;
+      return firstNet?.IPAddress || null;
+    } catch {
+      return null;
     }
   }
 

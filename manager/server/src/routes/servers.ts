@@ -338,8 +338,9 @@ serversRouter.post('/:id/rcon', async (req, res) => {
 
     const globalUpd = store.getUpdatePolicy();
     const usePerServer = Boolean(server.rconEnabled && server.rconPort);
+    const containerIp = usePerServer ? await dockerService.getContainerBridgeIp(server.id) : null;
     const host = usePerServer
-      ? process.env.PUBLIC_HOST || '127.0.0.1'
+      ? containerIp || process.env.PUBLIC_HOST || '127.0.0.1'
       : globalUpd.rconHost || '127.0.0.1';
     const port = usePerServer ? Number(server.rconPort) : Number(globalUpd.rconPort);
     const password = usePerServer ? server.rconPassword || '' : globalUpd.rconPassword || '';
